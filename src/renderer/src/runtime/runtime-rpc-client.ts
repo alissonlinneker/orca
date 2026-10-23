@@ -72,17 +72,13 @@ export async function callRuntimeRpc<TResult>(
     ? withBrowserPaneUiRuntimeRpcSource(params)
     : params
   options.beforeSend?.()
+  const request = { method, params: nextParams }
   const response =
     target.kind === 'local'
-      ? await withLocalRuntimeRpcDeadline(
-          window.api.runtime.call({ method, params: nextParams }),
-          method,
-          { timeoutMs: options.timeoutMs, signal: options.signal }
-        )
+      ? await withLocalRuntimeRpcDeadline(window.api.runtime.call(request), method, options)
       : await callRuntimeEnvironmentWithRevision({
           environmentId: target.environmentId,
-          method,
-          params: nextParams,
+          ...request,
           timeoutMs: options.timeoutMs,
           signal: options.signal,
           expectedEnvironmentPairingRevision,
