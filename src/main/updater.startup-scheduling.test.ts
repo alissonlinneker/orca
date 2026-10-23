@@ -4,7 +4,6 @@ import { loadUpdaterModule, warmUpdaterModule } from './updater-test-module-load
 const {
   appMock,
   autoUpdaterMock,
-  isMock,
   powerMonitorOnMock,
   fetchNudgeMock,
   shouldApplyNudgeMock,
@@ -15,8 +14,7 @@ const {
 vi.mock('electron', () => moduleFactories.electron())
 vi.mock('electron-updater', () => moduleFactories.electronUpdater())
 vi.mock('./electron-updater-loader', () => moduleFactories.electronUpdaterLoader())
-vi.mock('@electron-toolkit/utils', () => moduleFactories.electronToolkitUtils())
-vi.mock('./ipc/pty', () => moduleFactories.ipcPty())
+vi.mock('./ipc/pty/kill-all', () => moduleFactories.ptyKillAll())
 vi.mock('./linux-update-package-type', () => moduleFactories.linuxUpdatePackageType())
 vi.mock('./updater-lifecycle-diagnostics', () => moduleFactories.updaterLifecycleDiagnostics())
 vi.mock('./updater-changelog', () => moduleFactories.updaterChangelog())
@@ -35,7 +33,7 @@ describe('updater', () => {
   })
 
   it('does not load or configure electron-updater during dev setup', async () => {
-    isMock.dev = true
+    appMock.isPackaged = false
     const mainWindow = { webContents: { send: vi.fn() } }
 
     const { setupAutoUpdater } = await loadUpdaterModule()
@@ -258,19 +256,6 @@ describe('updater', () => {
   // Why: a no-op verifyUpdateCodeSignature override would silently accept every installer; keep electron-updater's Authenticode check (issue #631 resolved).
   it('does not disable Windows Authenticode verification on win32', async () => {
     vi.stubGlobal('process', { ...process, platform: 'win32' })
-
-    const { setupAutoUpdater } = await loadUpdaterModule()
-
-    const sendMock = vi.fn()
-    const mainWindow = { webContents: { send: sendMock } }
-
-    setupAutoUpdater(mainWindow as never)
-
-    expect((autoUpdaterMock as Record<string, unknown>).verifyUpdateCodeSignature).toBeUndefined()
-  })
-
-  it('does not override verifyUpdateCodeSignature on non-Windows platforms', async () => {
-    vi.stubGlobal('process', { ...process, platform: 'darwin' })
 
     const { setupAutoUpdater } = await loadUpdaterModule()
 

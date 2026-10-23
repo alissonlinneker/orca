@@ -1,4 +1,7 @@
-import { remoteSessionContentLines } from './remote-session-content-lines'
+import {
+  remoteSessionContentLines,
+  type RemoteSessionContent
+} from './remote-session-content-lines'
 import { openTranscriptReadStream } from '../native-chat/wsl-transcript-fs-access'
 import { createInterface } from 'node:readline'
 import type { AiVaultSession } from '../../shared/ai-vault-types'
@@ -10,14 +13,16 @@ import type {
   ResumableSessionParseState,
   SessionAccumulator
 } from './session-scanner-types'
+import type { TranscriptMessageSink } from './session-transcript-consumers'
 import {
-  addPreviewContent,
+  accumulatorSessionIdentity,
   createAccumulator,
   finalizeSession,
   sessionIdFromFileName,
   updateLatestLocation,
   updateTimeline
 } from './session-scanner-accumulator'
+import { addSessionContent } from './session-scanner-messages'
 import { countSubagentTranscripts } from './session-scanner-subagent-transcripts'
 import {
   asRecord,
@@ -42,12 +47,16 @@ export type ClaudeSessionParseState = {
   firstUserTitle: string | null
 }
 
-export function createClaudeSessionParseState(file: FileWithMtime): ClaudeSessionParseState {
+export function createClaudeSessionParseState(
+  file: FileWithMtime,
+  messages?: TranscriptMessageSink
+): ClaudeSessionParseState {
   return {
     accumulator: createAccumulator({
       agent: 'claude',
       file,
-      sessionId: sessionIdFromFileName(file.path)
+      sessionId: sessionIdFromFileName(file.path),
+      messages
     }),
     metaTitle: null,
     generatedTitle: null,
@@ -70,11 +79,17 @@ export function cloneClaudeSessionParseState(
 }
 
 export function consumeClaudeSessionLine(state: ClaudeSessionParseState, line: string): void {
-  const { accumulator } = state
   const record = parseJsonObject(line)
-  if (!record) {
-    return
+  if (record) {
+    consumeClaudeSessionRecord(state, record)
   }
+}
+
+export function consumeClaudeSessionRecord(
+  state: ClaudeSessionParseState,
+  record: Record<string, unknown>
+): void {
+  const { accumulator } = state
 
   if (typeof record.sessionId === 'string' && record.sessionId.trim()) {
     accumulator.sessionId = record.sessionId.trim()
@@ -134,7 +149,7 @@ export function consumeClaudeSessionLine(state: ClaudeSessionParseState, line: s
     // must seed the primary title, not be demoted as machinery.
     const isMetaUserTurn =
       record.isMeta === true || (title != null && isKnownHarnessInjectedUserTurnText(title))
-    addPreviewContent(accumulator, 'user', asRecord(record.message)?.content, record.timestamp, {
+    addSessionContent(accumulator, 'user', asRecord(record.message)?.content, record.timestamp, {
       seedFirstUserPrompt: !isMetaUserTurn
     })
     if (title) {
@@ -150,7 +165,7 @@ export function consumeClaudeSessionLine(state: ClaudeSessionParseState, line: s
   if (record.type === 'assistant') {
     accumulator.messageCount++
     const message = asRecord(record.message)
-    addPreviewContent(accumulator, 'assistant', message?.content, record.timestamp)
+    addSessionContent(accumulator, 'assistant', message?.content, record.timestamp)
     const model = extractString(message?.model)
     if (model) {
       accumulator.model = model
@@ -188,8 +203,11 @@ export async function finalizeClaudeSessionParseState(
   return finalizeSession(snapshot.accumulator, platform, options)
 }
 
-export function createClaudeSessionResumeState(file: FileWithMtime): ResumableSessionParseState {
-  return claudeResumeStateFromParseState(createClaudeSessionParseState(file))
+export function createClaudeSessionResumeState(
+  file: FileWithMtime,
+  messages?: TranscriptMessageSink
+): ResumableSessionParseState {
+  return claudeResumeStateFromParseState(createClaudeSessionParseState(file, messages))
 }
 
 function claudeResumeStateFromParseState(
@@ -197,6 +215,7 @@ function claudeResumeStateFromParseState(
 ): ResumableSessionParseState {
   return {
     consumeLine: (line) => consumeClaudeSessionLine(state, line),
+    identity: () => accumulatorSessionIdentity(state.accumulator),
     clone: () => claudeResumeStateFromParseState(cloneClaudeSessionParseState(state)),
     touchFile: (file) => {
       state.accumulator.modifiedAt = file.modifiedAt
@@ -207,18 +226,19 @@ function claudeResumeStateFromParseState(
 
 export async function parseClaudeSessionFile(
   file: FileWithMtime,
-  platform: NodeJS.Platform = process.platform
+  platform: NodeJS.Platform = process.platform,
+  messages?: TranscriptMessageSink
 ): Promise<AiVaultSession | null> {
   const lines = createInterface({
     input: openTranscriptReadStream(file.path, { encoding: 'utf-8' }, 'scan'),
     crlfDelay: Infinity
   })
-  return parseClaudeSessionLines({ file, lines, platform })
+  return parseClaudeSessionLines({ file, lines, platform, messages })
 }
 
 export async function parseClaudeSessionContent(
   file: FileWithMtime,
-  content: string,
+  content: RemoteSessionContent,
   platform: NodeJS.Platform = process.platform,
   options: ParserSessionOptions = {},
   signal?: AbortSignal
@@ -236,8 +256,9 @@ async function parseClaudeSessionLines(args: {
   lines: AsyncIterable<string> | Iterable<string>
   platform: NodeJS.Platform
   options?: ParserSessionOptions
+  messages?: TranscriptMessageSink
 }): Promise<AiVaultSession | null> {
-  const state = createClaudeSessionParseState(args.file)
+  const state = createClaudeSessionParseState(args.file, args.messages)
   for await (const line of args.lines) {
     consumeClaudeSessionLine(state, line)
   }

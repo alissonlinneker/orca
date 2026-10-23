@@ -20,7 +20,7 @@ import {
   getWorktreePathSettings,
   hasRepoWorktreeBasePath
 } from './ipc/worktree-logic'
-import { worktreePathComparisonKey } from './ipc/worktree-path-comparison'
+import { worktreePathComparisonKey } from './worktree-path-comparison-key'
 import {
   retirementHostIdentity,
   retirementNamespaceKey,
@@ -52,6 +52,14 @@ type RetirementWriteStore = RetirementRuntimeStore & {
   mergeRetiredWorktreeNamesForNamespace?(namespaceKey: string, names: Iterable<string>): boolean
   getSshTarget?: SshTargetLookup
 }
+export function hasRetiredNameRegistryStore<
+  T extends RetirementRuntimeStore & Partial<RetirementReadStore & RetirementBackfillStore>
+>(store: T): store is T & RetirementReadStore & RetirementBackfillStore {
+  return (
+    typeof store.getRetiredWorktreeNameRegistry === 'function' &&
+    typeof store.mergeRetiredWorktreeNames === 'function'
+  )
+}
 type RetirementPathSettings = Pick<GlobalSettings, 'nestWorkspaces' | 'workspaceDir'> & {
   wslMirrorDistro?: string
 }
@@ -75,7 +83,12 @@ export function normalizeRetirableGeneratedName(name: string): string | null {
 /** A sparse create error carries this marker only when its rollback also failed, leaving the path
  *  occupied even though creation rejected. */
 export function failedWorktreeCreationNeedsRetirement(error: unknown): boolean {
-  return typeof error === 'object' && error !== null && Reflect.get(error, 'cleanupFailed') === true
+  return (
+    typeof error === 'object' &&
+    error !== null &&
+    'cleanupFailed' in error &&
+    error.cleanupFailed === true
+  )
 }
 
 async function getRetirementProbePath(

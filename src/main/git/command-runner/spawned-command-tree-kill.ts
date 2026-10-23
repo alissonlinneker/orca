@@ -3,9 +3,16 @@ import { admitSelfInitiatedTreeKill } from '../../own-chromium-tree-kill-guard'
 
 const WINDOWS_TREE_KILL_WAIT_MS = 2_000
 
-export function killSpawnedCommandTree(child: ChildProcess): Promise<void> {
+export function killSpawnedCommandTree(
+  child: Pick<ChildProcess, 'pid' | 'exitCode' | 'signalCode' | 'kill'>
+): Promise<void> {
   const pid = child.pid
   if (!pid || process.platform !== 'win32') {
+    child.kill()
+    return Promise.resolve()
+  }
+  // Windows may reuse the pid after exit while inherited pipes still delay close.
+  if ((child.exitCode ?? null) !== null || (child.signalCode ?? null) !== null) {
     child.kill()
     return Promise.resolve()
   }

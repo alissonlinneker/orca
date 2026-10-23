@@ -1,8 +1,11 @@
 import type { HandlerGroup } from './handler-group-manifest'
 
-// Why split out: the browser command surface is a third of the CLI's groups and
-// changes as a unit, so it keeps handler-group-manifest.ts readable at a glance.
 export const BROWSER_HANDLER_GROUPS: readonly HandlerGroup[] = [
+  {
+    name: 'browser-identity',
+    keys: ['browser identity get', 'browser identity set'],
+    load: async () => (await import('./handlers/browser-identity.js')).BROWSER_IDENTITY_HANDLERS
+  },
   {
     name: 'browser-nav',
     keys: [

@@ -8,6 +8,15 @@ import {
 } from '../transport/browser-screencast-protocol'
 import type { RpcClient } from '../transport/rpc-client'
 import { MobileBrowserPane, type MobileBrowserTab } from './MobileBrowserPane'
+import { useBrowserBinaryScreencastGrant } from './use-browser-binary-screencast-grant'
+
+// The seam ruling 5 put between the pane and a shell that may have no encoder behind the lane the
+// pane would ask for. Native answers yes always; mocked here so both answers are reachable.
+vi.mock('./use-browser-binary-screencast-grant', () => ({
+  useBrowserBinaryScreencastGrant: vi.fn(() => true)
+}))
+
+vi.mock('./MobileBrowserLoadProgress', () => ({ MobileBrowserLoadProgress: () => null }))
 
 vi.mock('react-native', () => ({
   ActivityIndicator: 'ActivityIndicator',
@@ -58,7 +67,11 @@ function spinnerCount(renderer: ReactTestRenderer): number {
   return renderer.root.findAllByType('ActivityIndicator').length
 }
 
-async function renderPane(): Promise<{ renderer: ReactTestRenderer; stream: Subscription }> {
+async function renderPane(): Promise<{
+  renderer: ReactTestRenderer
+  stream: Subscription | undefined
+  subscriptions: Subscription[]
+}> {
   pageCounter += 1
   const subscriptions: Subscription[] = []
   const client = {
@@ -114,18 +127,31 @@ async function renderPane(): Promise<{ renderer: ReactTestRenderer; stream: Subs
   act(() => {
     viewport.props.onLayout({ nativeEvent: { layout: { width: 360, height: 640 } } })
   })
-  const stream = subscriptions[0]
+  return { renderer: mounted, stream: subscriptions[0], subscriptions }
+}
+
+async function renderStreamingPane(): Promise<{
+  renderer: ReactTestRenderer
+  stream: Subscription
+}> {
+  const { renderer, stream } = await renderPane()
   if (!stream) {
     throw new Error('browser.screencast subscription not created')
   }
-  return { renderer: mounted, stream }
+  return { renderer, stream }
+}
+
+function errorMessages(renderer: ReactTestRenderer): string[] {
+  return renderer.root
+    .findAllByType('Text')
+    .flatMap((node) => (typeof node.props.children === 'string' ? [node.props.children] : []))
 }
 
 describe('MobileBrowserPane with a stream that reports ready but sends no frames', () => {
   // Why: a host that stops painting still reports `ready`, so the pane used to clear its
   // indicator and leave an unexplained black rectangle.
   it('keeps showing the loading indicator instead of an empty black pane', async () => {
-    const { renderer, stream } = await renderPane()
+    const { renderer, stream } = await renderStreamingPane()
 
     act(() => {
       stream.listener({ type: 'ready', tab: { url: 'https://dashboard.example' } })
@@ -135,7 +161,7 @@ describe('MobileBrowserPane with a stream that reports ready but sends no frames
   })
 
   it('clears the indicator once real pixels arrive', async () => {
-    const { renderer, stream } = await renderPane()
+    const { renderer, stream } = await renderStreamingPane()
 
     act(() => {
       stream.listener({ type: 'ready', tab: { url: 'https://dashboard.example' } })
@@ -145,10 +171,29 @@ describe('MobileBrowserPane with a stream that reports ready but sends no frames
     })
 
     expect(spinnerCount(renderer)).toBe(0)
+    expect(errorMessages(renderer)).not.toContain(
+      'Update the Orca app to stream browser tabs here.'
+    )
     const source = renderer.root
       .findAllByType('Image')
       .map((image) => (image.props.source as { uri?: string } | null)?.uri)
       .find((uri) => typeof uri === 'string')
     expect(source).toContain(Buffer.from(makeFrame().image).toString('base64'))
+  })
+})
+
+describe('MobileBrowserPane against a shell with no binary screencast lane', () => {
+  // Ruling 5: the grant is the negotiation. Subscribing anyway leaves the pane on a stream that
+  // can never produce a frame, and the startup timeout is the only thing that would ever say so.
+  it('never subscribes, and says so with the stream-error state it already has', async () => {
+    vi.mocked(useBrowserBinaryScreencastGrant).mockReturnValue(false)
+    try {
+      const { renderer, subscriptions } = await renderPane()
+
+      expect(subscriptions).toEqual([])
+      expect(errorMessages(renderer)).toContain('Update the Orca app to stream browser tabs here.')
+    } finally {
+      vi.mocked(useBrowserBinaryScreencastGrant).mockReturnValue(true)
+    }
   })
 })

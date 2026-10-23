@@ -1,16 +1,29 @@
 import { TERMINAL_PAIRED_PARKING_RUNTIME_CAPABILITY } from '../../../../shared/protocol-version'
+import {
+  isRuntimeHostContactRevoked,
+  lastVerifiedRuntimeStatus,
+  type RuntimeHostStatusSnapshot
+} from '../../../../shared/runtime-host-status'
+
+type PairedRuntimeParkingCapability = { capabilities?: readonly string[] }
 
 type PairedRuntimeParkingCapabilityStatuses = ReadonlyMap<
   string,
-  { status: { capabilities?: readonly string[] } | null | undefined }
+  {
+    status: PairedRuntimeParkingCapability | null | undefined
+    snapshot?:
+      | ({ status: PairedRuntimeParkingCapability | null } & Pick<
+          RuntimeHostStatusSnapshot,
+          'verification' | 'retired'
+        >)
+      | null
+  }
 >
 
 type PairedRuntimeParkingEnvironmentIdsCache = {
   statuses: PairedRuntimeParkingCapabilityStatuses
   environmentIds: ReadonlySet<string>
 }
-
-let pairedRuntimeParkingEnvironmentIdsCache: PairedRuntimeParkingEnvironmentIdsCache | null = null
 
 function haveSameEnvironmentIds(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
   if (left.size !== right.size) {
@@ -24,26 +37,43 @@ function haveSameEnvironmentIds(left: ReadonlySet<string>, right: ReadonlySet<st
   return true
 }
 
+export function createPairedRuntimeParkingEnvironmentIdsSelector() {
+  let cache: PairedRuntimeParkingEnvironmentIdsCache | null = null
+  return (statuses: PairedRuntimeParkingCapabilityStatuses): ReadonlySet<string> => {
+    const cached = cache
+    if (cached?.statuses === statuses) {
+      return cached.environmentIds
+    }
+
+    const capable = new Set<string>()
+    for (const [environmentId, entry] of statuses) {
+      // Why last-verified: a capability is a fact about the host's build, so an unverifiable
+      // probe must not unpark its terminals. See docs/reference/ssh-execution-boundary.md.
+      // Why the revoked gate: parking discards the client's only copy of the scrollback against
+      // a host-side restore, so a host that refused us must not keep promising one.
+      if (isRuntimeHostContactRevoked(entry)) {
+        continue
+      }
+      const status = lastVerifiedRuntimeStatus<PairedRuntimeParkingCapability>(entry)
+      if (status?.capabilities?.includes(TERMINAL_PAIRED_PARKING_RUNTIME_CAPABILITY)) {
+        capable.add(environmentId)
+      }
+    }
+    const environmentIds =
+      cached && haveSameEnvironmentIds(cached.environmentIds, capable)
+        ? cached.environmentIds
+        : capable
+    cache = { statuses, environmentIds }
+    return environmentIds
+  }
+}
+
+let selectParkingEnvironmentIds = createPairedRuntimeParkingEnvironmentIdsSelector()
+
 export function selectPairedRuntimeParkingEnvironmentIds(
   statuses: PairedRuntimeParkingCapabilityStatuses
 ): ReadonlySet<string> {
-  const cached = pairedRuntimeParkingEnvironmentIdsCache
-  if (cached?.statuses === statuses) {
-    return cached.environmentIds
-  }
-
-  const capable = new Set<string>()
-  for (const [environmentId, entry] of statuses) {
-    if (entry.status?.capabilities?.includes(TERMINAL_PAIRED_PARKING_RUNTIME_CAPABILITY)) {
-      capable.add(environmentId)
-    }
-  }
-  const environmentIds =
-    cached && haveSameEnvironmentIds(cached.environmentIds, capable)
-      ? cached.environmentIds
-      : capable
-  pairedRuntimeParkingEnvironmentIdsCache = { statuses, environmentIds }
-  return environmentIds
+  return selectParkingEnvironmentIds(statuses)
 }
 
 export function selectPairedRuntimeParkingEnvironmentIdsFromState(state: {
@@ -53,5 +83,5 @@ export function selectPairedRuntimeParkingEnvironmentIdsFromState(state: {
 }
 
 export function resetPairedRuntimeParkingEnvironmentIdsCacheForTest(): void {
-  pairedRuntimeParkingEnvironmentIdsCache = null
+  selectParkingEnvironmentIds = createPairedRuntimeParkingEnvironmentIdsSelector()
 }

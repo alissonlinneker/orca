@@ -8,20 +8,47 @@
  */
 export type AgentOwnershipEvidence = 'present' | 'absent' | 'unknown'
 
+/** Omission lists established routes; explicit null selects local, with raw candidates opt-in. */
+export type PtySessionListScope = { connectionId: string | null; includeUnrouted?: boolean }
+
+export function ptySessionIdentity(session: {
+  id: string
+  incarnationId?: string
+  inventorySourceId?: string
+}): string {
+  const identity = [session.id, session.incarnationId ?? null]
+  if (session.inventorySourceId !== undefined) {
+    identity.push(session.inventorySourceId)
+  }
+  return JSON.stringify(identity)
+}
+
 /**
  * One row of `pty:listSessions`. Shared so the main handler, both preload surfaces, and the
  * renderer cannot drift on which evidence the UI is allowed to see.
  */
 export type PtyListedSession = {
   id: string
+  incarnationId?: string
+  /** Local diagnostic provenance, distinct even when legacy hosts omit incarnations. */
+  inventorySourceId?: string
+  /** Whether this candidate is the established route for its id; absent on older publishers. */
+  routed?: boolean
+  fencedTermination?: boolean
+  rootProcessId?: number
+  /** Recently observed process name; inventory reads never initiate process inspection. */
+  foregroundProcess?: string
   cwd: string
   title: string
+  worktreeId?: string
   /**
    * Agent ownership as the listing provider could establish it. Destructive actions must treat
    * anything other than `absent` as live work: discarding this distinction is what let Resource
    * Manager force-kill live agent sessions (#8459).
    */
   agentOwnership: AgentOwnershipEvidence
+  /** Still live, but its host is terminating it after an accepted kill: never adopt or restore it. */
+  exiting?: true
 }
 
 /** Only proven absence authorizes destroying a session without asking. */
@@ -30,3 +57,5 @@ export function mayDestroyWithoutOwnerEvidence(session: {
 }): boolean {
   return session.agentOwnership === 'absent'
 }
+
+export type PtySessionLifecycle = { id: string; incarnationId?: string; hostId?: string }

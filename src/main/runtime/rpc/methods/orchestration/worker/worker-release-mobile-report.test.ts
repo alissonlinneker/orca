@@ -2,7 +2,8 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { createOrchestrationWorkerReleaseHarness } from './worker-release.test-support'
 import { TERMINAL_SEND_METHODS } from '../../terminal/terminal-send-method'
 import { sendTerminalStreamInput } from '../../terminal/terminal-input-delivery'
-import { isStreamingMethod, type RpcMethod } from '../../../core'
+import { eraseRpcMethods, isStreamingMethod, type RpcMethod } from '../../../core'
+import { registerBoundPty } from '../../../../bind-first-pane.test-fixture'
 
 const h = createOrchestrationWorkerReleaseHarness()
 beforeEach(() => h.setup())
@@ -26,7 +27,7 @@ it.each(['local', 'ssh'])(
     const worker = await h.startSettledWorker()
     expect(h.db.getWorkerTerminalResourceByOwner(worker.dispatchId)?.host_scope).toContain(host)
     h.runtime.registerPreAllocatedHandleForPty('pty-worker', 'term_worker')
-    h.runtime.registerPty('pty-worker', 'repo::worktree', undefined, {
+    registerBoundPty(h.runtime, 'pty-worker', 'repo::worktree', null, {
       tabId: 'tab_worker',
       leafId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
     })
@@ -50,7 +51,7 @@ it.each(['local', 'ssh'])(
 it('an unknown handle does not fence another worker or access the database', async () => {
   const worker = await h.startSettledWorker()
   h.runtime.registerPreAllocatedHandleForPty('pty-worker', 'term_worker')
-  h.runtime.registerPty('pty-worker', 'repo::worktree', undefined, {
+  registerBoundPty(h.runtime, 'pty-worker', 'repo::worktree', null, {
     tabId: 'tab_worker',
     leafId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
   })
@@ -70,7 +71,7 @@ it.each(['unary', 'stream'])('mobile %s bytes do no orchestration database work'
   const worker = await h.startSettledWorker()
   const runtime = h.runtime
   runtime.registerPreAllocatedHandleForPty('pty-worker', 'term_worker')
-  runtime.registerPty('pty-worker', 'repo::worktree', undefined, {
+  registerBoundPty(runtime, 'pty-worker', 'repo::worktree', null, {
     tabId: 'tab_worker',
     leafId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
     incarnationId: 'runtime_test:term_worker:1'
@@ -93,14 +94,14 @@ it.each(['unary', 'stream'])('mobile %s bytes do no orchestration database work'
       'delivered'
     )
   } else {
-    const method = TERMINAL_SEND_METHODS.find(
+    const method = eraseRpcMethods(TERMINAL_SEND_METHODS).find(
       (m): m is RpcMethod => m.name === 'terminal.send' && !isStreamingMethod(m)
     )!
     await expect(
       method.handler(method.params!.parse(params) as never, { runtime } as never)
     ).resolves.toMatchObject({ send: { accepted: true } })
   }
-  expect(write).toHaveBeenCalledWith('pty-worker', 'x')
+  expect(write).toHaveBeenCalledWith('pty-worker', 'x', 'driving')
   expect(commit).toHaveBeenCalledTimes(1)
   expect(dbAccess).not.toHaveBeenCalled()
   expect(takeover).not.toHaveBeenCalled()
@@ -138,7 +139,7 @@ it('a phone report during the boot wait takes the pane and fences the later rele
   ).dispatch_id
 
   h.runtime.registerPreAllocatedHandleForPty('pty-worker', 'term_worker')
-  h.runtime.registerPty('pty-worker', 'repo::worktree', undefined, {
+  registerBoundPty(h.runtime, 'pty-worker', 'repo::worktree', null, {
     tabId: 'tab_worker',
     leafId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
   })

@@ -76,10 +76,7 @@ export abstract class BrowserManagerBindings extends BrowserManagerGrab {
         guest,
         resolveRenderer: (tabId) =>
           resolveRendererWebContents(this.rendererWebContentsIdByTabId, tabId),
-        isViewportPresetActive: () => {
-          const state = this.viewportPresetActiveByTabId.get(browserTabId)
-          return state?.guestWebContentsId === guest.id && state.active
-        },
+        isViewportPresetActive: () => this.isViewportPresetActive(browserTabId, guest.id),
         canViewportScroll: (mouse) => this.canViewportScroll(browserTabId, mouse),
         onViewportWheelConsumed: (deltaX, deltaY) =>
           this.recordViewportScrollDelta(browserTabId, deltaX, deltaY)

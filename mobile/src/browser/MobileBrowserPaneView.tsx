@@ -14,14 +14,16 @@ import { ArrowUp, ChevronLeft, ChevronRight, RefreshCw } from 'lucide-react-nati
 import { colors } from '../theme/mobile-theme'
 import { MobileBrowserAddressField } from './MobileBrowserAddressField'
 import { MobileBrowserKeyRow } from './MobileBrowserKeyRow'
+import { MobileBrowserLoadFailure } from './MobileBrowserLoadFailure'
 import {
   MobileBrowserPointerModifiers,
   type BrowserPointerModifier
 } from './MobileBrowserPointerModifiers'
 import { MobileBrowserToolbarIconButton } from './MobileBrowserToolbarIconButton'
 import { MobileBrowserViewModeSwitch } from './MobileBrowserViewModeSwitch'
-import { buttonColor, type FrameLayer } from './mobile-browser-frame-state'
+import { buttonColor } from './mobile-browser-frame-state'
 import { mobileBrowserPaneStyles as styles } from './mobile-browser-pane-styles'
+import type { BrowserFrameLayerBinding } from './browser-frame-pacer'
 import type {
   BrowserFrameGeometry,
   BrowserTouchLayout,
@@ -29,22 +31,25 @@ import type {
 } from './browser-touch-geometry'
 import type { MobileBrowserViewMode } from './browser-screencast-request'
 import type { MobileBrowserTab } from './MobileBrowserPane'
+import type { BrowserDialogState } from './mobile-browser-stream-events'
+
+// Why: seeds layer 0 as the visible one; the pacer owns opacity after mount, so a render must not.
+const FRAME_LAYER_STYLES: [StyleProp<ViewStyle>, StyleProp<ViewStyle>] = [
+  styles.browserImageLayer,
+  [styles.browserImageLayer, styles.browserImageLayerHidden]
+]
 
 type MobileBrowserPaneViewProps = {
   addressFocused: boolean
   addressValue: string
   bottomInset: number
-  browserLayerRef: (layer: FrameLayer) => (view: View | null) => void
   browserViewMode: MobileBrowserViewMode
   busy: boolean
   controlsDisabled: boolean
-  dialog: { dialogType: string; message: string } | null
+  dialog: BrowserDialogState | null
   error: string | null
   frameGeometry: BrowserFrameGeometry | null
-  frameLayerErrorHandler: (layer: FrameLayer) => () => void
-  frameLayerLoadHandler: (layer: FrameLayer) => () => void
-  frameLayerRef: (layer: FrameLayer) => (image: Image | null) => void
-  frameLayerStyle: (layer: FrameLayer) => StyleProp<ViewStyle>
+  frameLayers: readonly [BrowserFrameLayerBinding, BrowserFrameLayerBinding]
   goBack: () => void
   goForward: () => void
   keyboardLift: number
@@ -69,22 +74,28 @@ type MobileBrowserPaneViewProps = {
   zoom: BrowserZoomState
 }
 
+/**
+ * The pane's chrome and the surface the frames paint into.
+ *
+ * "Never dark" holds only for a page that produces some frame that fits: with every frame over the
+ * cap this sits on its busy spinner over an unpainted viewport, which the C6.6 device proof
+ * measured with the area budget forced off — 299 dropped, 6 applied, the stream alive and no error
+ * state, and nothing to look at. That is C6 ruling 1 working as written, not a failure of it: a
+ * frame that does not fit is dropped rather than ending the stream. It is what the area budget
+ * exists to keep from happening.
+ */
 export function MobileBrowserPaneView(props: MobileBrowserPaneViewProps) {
   const {
     addressFocused,
     addressValue,
     bottomInset,
-    browserLayerRef,
     browserViewMode,
     busy,
     controlsDisabled,
     dialog,
     error,
     frameGeometry,
-    frameLayerErrorHandler,
-    frameLayerLoadHandler,
-    frameLayerRef,
-    frameLayerStyle,
+    frameLayers,
     goBack,
     goForward,
     keyboardLift,
@@ -140,6 +151,8 @@ export function MobileBrowserPaneView(props: MobileBrowserPaneViewProps) {
           onSubmit={() => void navigateToAddress()}
           focused={addressFocused}
           disabled={controlsDisabled}
+          loading={tab.loading}
+          loadFailed={tab.loadError != null}
         />
         <MobileBrowserViewModeSwitch
           disabled={controlsDisabled}
@@ -191,17 +204,17 @@ export function MobileBrowserPaneView(props: MobileBrowserPaneViewProps) {
                   {([0, 1] as const).map((layer) => (
                     <View
                       key={layer}
-                      ref={browserLayerRef(layer)}
+                      ref={frameLayers[layer].attachView}
                       pointerEvents="none"
-                      style={frameLayerStyle(layer)}
+                      style={FRAME_LAYER_STYLES[layer]}
                     >
                       <Image
-                        ref={frameLayerRef(layer)}
+                        ref={frameLayers[layer].attachImage}
                         source={renderedFrameSource}
                         resizeMode="stretch"
                         fadeDuration={0}
-                        onLoad={frameLayerLoadHandler(layer)}
-                        onError={frameLayerErrorHandler(layer)}
+                        onLoad={frameLayers[layer].onLoad}
+                        onError={frameLayers[layer].onError}
                         style={[
                           styles.browserImage,
                           {
@@ -218,17 +231,17 @@ export function MobileBrowserPaneView(props: MobileBrowserPaneViewProps) {
               ([0, 1] as const).map((layer) => (
                 <View
                   key={layer}
-                  ref={browserLayerRef(layer)}
+                  ref={frameLayers[layer].attachView}
                   pointerEvents="none"
-                  style={frameLayerStyle(layer)}
+                  style={FRAME_LAYER_STYLES[layer]}
                 >
                   <Image
-                    ref={frameLayerRef(layer)}
+                    ref={frameLayers[layer].attachImage}
                     source={renderedFrameSource}
                     resizeMode="contain"
                     fadeDuration={0}
-                    onLoad={frameLayerLoadHandler(layer)}
-                    onError={frameLayerErrorHandler(layer)}
+                    onLoad={frameLayers[layer].onLoad}
+                    onError={frameLayers[layer].onError}
                     style={styles.browserImageFill}
                   />
                 </View>
@@ -236,6 +249,7 @@ export function MobileBrowserPaneView(props: MobileBrowserPaneViewProps) {
             )}
           </View>
         ) : null}
+        {tab.loadError ? <MobileBrowserLoadFailure loadError={tab.loadError} /> : null}
         {!renderedFrameSource || busy || error ? (
           <View pointerEvents="none" style={styles.overlay}>
             {/* Why: a stream can report ready and then deliver no frames, so key the
@@ -251,12 +265,16 @@ export function MobileBrowserPaneView(props: MobileBrowserPaneViewProps) {
             <View style={styles.dialogCard}>
               <Text style={styles.dialogTitle}>Browser Dialog</Text>
               <Text style={styles.dialogMessage}>{dialog.message}</Text>
+              {/* The page is still blocked, so the buttons stay live and the card says why. */}
+              {dialog.error ? <Text style={styles.dialogError}>{dialog.error}</Text> : null}
               <View style={styles.dialogActions}>
                 {dialog.dialogType !== 'alert' ? (
                   <Pressable
+                    disabled={dialog.pending !== undefined}
                     style={({ pressed }) => [
                       styles.dialogButton,
-                      pressed && styles.dialogButtonPressed
+                      pressed && styles.dialogButtonPressed,
+                      dialog.pending !== undefined && styles.dialogButtonDisabled
                     ]}
                     onPress={() => void sendDialogCommand('browser.dialogDismiss')}
                   >
@@ -264,10 +282,12 @@ export function MobileBrowserPaneView(props: MobileBrowserPaneViewProps) {
                   </Pressable>
                 ) : null}
                 <Pressable
+                  disabled={dialog.pending !== undefined}
                   style={({ pressed }) => [
                     styles.dialogButton,
                     styles.dialogButtonPrimary,
-                    pressed && styles.dialogButtonPressed
+                    pressed && styles.dialogButtonPressed,
+                    dialog.pending !== undefined && styles.dialogButtonDisabled
                   ]}
                   onPress={() => void sendDialogCommand('browser.dialogAccept')}
                 >

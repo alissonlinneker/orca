@@ -247,6 +247,39 @@ describe('orchestration RPC methods', () => {
       expect(db.getUnreadMessages(`run:${activeRunId}`)).toHaveLength(1)
     })
 
+    it('names the id-kind mismatch when --ack is given a message id', async () => {
+      setup()
+      db.insertMessage({
+        from: 'worker',
+        to: `run:${activeRunId}`,
+        subject: 'queued',
+        runId: activeRunId
+      })
+      const [queued] = db.getUnreadMessages(`run:${activeRunId}`)
+      const checked = await call('orchestration.check', { terminal: 'term_coord' })
+      if (!checked || typeof checked !== 'object' || !('deliveryId' in checked)) {
+        throw new Error('Expected a mailbox delivery')
+      }
+      const deliveryId = checked.deliveryId
+      expect(typeof deliveryId).toBe('string')
+
+      await expect(
+        call('orchestration.check', { terminal: 'term_coord', ack: queued.id })
+      ).rejects.toMatchObject({
+        code: 'stale_delivery',
+        message: `${queued.id} is a message id, not a delivery id. Acknowledge the batch with the deliveryId field from the check response; process the entire batch before acknowledging.`
+      })
+      expect(db.getMessageById(queued.id)).toMatchObject({ id: queued.id, read: 0 })
+      expect(await call('orchestration.check', { terminal: 'term_coord' })).toMatchObject({
+        deliveryId,
+        messages: [{ id: queued.id }]
+      })
+      expect(
+        await call('orchestration.check', { terminal: 'term_coord', ack: deliveryId })
+      ).toMatchObject({ acknowledged: deliveryId })
+      expect(db.getMessageById(queued.id)).toMatchObject({ read: 1 })
+    })
+
     it('acknowledges a Run Delivery before returning --peek history', async () => {
       setup()
       db.insertMessage({
@@ -676,7 +709,7 @@ describe('orchestration RPC methods', () => {
       setup()
       const msg = db.insertMessage({ from: 'a', to: 'b', subject: 'hi' })
       // Why: simulate push-on-idle stamping delivered_at without the runtime loop.
-      db.markAsDelivered([msg.id])
+      db.markAsDelivered([msg.id], 'b')
 
       const result = (await call('orchestration.check', {
         terminal: 'b',

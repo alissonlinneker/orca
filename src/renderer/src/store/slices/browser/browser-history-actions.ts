@@ -9,17 +9,22 @@ import {
 import {
   MAX_WORKSPACE_DOC_HISTORY_ENTRIES,
   normalizeWorkspaceDocHistoryEntries,
-  normalizeWorkspaceDocHistoryTitle
+  normalizeWorkspaceDocHistoryTitle,
+  workspaceDocHistoryEntriesEqual
 } from '../../../../../shared/workspace-doc-history'
 import { browserPageDocLocationsEqual } from '../../../../../shared/browser-page-doc-location'
 import { ORCA_BROWSER_BLANK_URL } from '../../../../../shared/constants'
 
 export function createBrowserHistoryActions(
   set: BrowserSliceSet,
-  _get: BrowserSliceGet
+  get: BrowserSliceGet
 ): Pick<
   BrowserSlice,
-  'recordWorkspaceDocVisit' | 'addBrowserHistoryEntry' | 'clearBrowserHistory'
+  | 'recordWorkspaceDocVisit'
+  | 'addBrowserHistoryEntry'
+  | 'removeBrowserHistoryEntry'
+  | 'restoreBrowserHistoryEntry'
+  | 'clearBrowserHistory'
 > {
   return {
     recordWorkspaceDocVisit: (docLocation, title, options) => {
@@ -37,16 +42,25 @@ export function createBrowserHistoryActions(
           title ?? existing?.title,
           docLocation
         )
-        const next: WorkspaceDocHistoryEntry[] = existing
-          ? s.workspaceDocHistory.map((entry) =>
-              entry === existing
-                ? {
-                    ...entry,
-                    title: normalizedTitle,
-                    ...(bump ? { lastVisitedAt: now, visitCount: entry.visitCount + 1 } : {})
-                  }
-                : entry
-            )
+        const updated: WorkspaceDocHistoryEntry | null = existing
+          ? {
+              ...existing,
+              title: normalizedTitle,
+              ...(bump ? { lastVisitedAt: now, visitCount: existing.visitCount + 1 } : {})
+            }
+          : null
+        // A repeated title-updated event from a live preview changes nothing; hand back the same
+        // state so no subscriber re-renders. Over the cap the old path still had trimming to do.
+        if (
+          existing &&
+          updated &&
+          workspaceDocHistoryEntriesEqual(updated, existing) &&
+          s.workspaceDocHistory.length <= MAX_WORKSPACE_DOC_HISTORY_ENTRIES
+        ) {
+          return s
+        }
+        const next: WorkspaceDocHistoryEntry[] = updated
+          ? s.workspaceDocHistory.map((entry) => (entry === existing ? updated : entry))
           : [
               { docLocation, title: normalizedTitle, lastVisitedAt: now, visitCount: 1 },
               ...s.workspaceDocHistory
@@ -98,6 +112,26 @@ export function createBrowserHistoryActions(
         }
         return { browserUrlHistory: next }
       })
+    },
+
+    removeBrowserHistoryEntry: (normalizedUrl) => {
+      const removed =
+        get().browserUrlHistory.find((entry) => entry.normalizedUrl === normalizedUrl) ?? null
+      if (removed) {
+        set((s) => ({
+          browserUrlHistory: s.browserUrlHistory.filter((entry) => entry !== removed)
+        }))
+      }
+      return removed
+    },
+
+    restoreBrowserHistoryEntry: (entry) => {
+      set((s) =>
+        // A revisit between remove and Undo already re-created the row; keep the live one.
+        s.browserUrlHistory.some((existing) => existing.normalizedUrl === entry.normalizedUrl)
+          ? s
+          : { browserUrlHistory: [entry, ...s.browserUrlHistory] }
+      )
     },
 
     // One clear for both sources: the dropdown presents them as one history.

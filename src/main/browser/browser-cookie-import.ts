@@ -10,14 +10,13 @@ import {
   importCookiesFromFile as importFile,
   type CookieImportOptions
 } from './browser-cookie-import-pipeline'
-import { importChromiumCookies } from './browser-cookie-chromium-import'
+import { importChromiumCookies } from './cookies/chromium/import-cookies'
 import { importCookiesFromFirefox } from './browser-cookie-firefox-import'
 import { importCookiesFromSafari } from './browser-cookie-safari-import'
 import {
   buildChromiumCookieInsertParams as buildInsertParams,
   type ChromiumCookieColumnInfo
 } from './browser-cookie-sqlite'
-import { isAppBoundEncryptedCookie as isAppBoundCookie } from './browser-cookie-decryption'
 import { summarizeCookieImportError as summarizeError } from './browser-cookie-import-diagnostics'
 
 export type { BrowserProfile, DetectedBrowser, CookieImportOptions, ChromiumCookieColumnInfo }
@@ -51,10 +50,6 @@ export function buildChromiumCookieInsertParams(
   decryptedValue: Buffer
 ): (string | number | bigint | Buffer | null)[] {
   return buildInsertParams(targetColumns, sourceRow, decryptedValue)
-}
-
-export function isAppBoundEncryptedCookie(encryptedBuffer: Buffer): boolean {
-  return isAppBoundCookie(encryptedBuffer)
 }
 
 export async function importCookiesFromBrowser(

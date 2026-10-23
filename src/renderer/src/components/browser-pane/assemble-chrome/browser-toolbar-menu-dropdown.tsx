@@ -1,4 +1,4 @@
-import { Check, Ellipsis, Import, Monitor, Plus, Settings } from 'lucide-react'
+import { Check, Ellipsis, FileCode2, Import, Monitor, Plus, Settings } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -21,6 +21,11 @@ import type {
   BrowserSessionProfile,
   BrowserViewportPresetId
 } from '../../../../../shared/browser-workspace-types'
+import type {
+  BrowserPageSiteDisplay,
+  BrowserSiteColorScheme
+} from '../../../../../shared/browser-site-display'
+import type { BrowserPageZoomDirection } from '../../../../../shared/browser-page-zoom'
 
 type DetectedBrowserEntry = {
   family: string
@@ -30,8 +35,17 @@ type DetectedBrowserEntry = {
 }
 import { BROWSER_VIEWPORT_PRESETS } from '../../../../../shared/browser-viewport-presets'
 import { translate } from '@/i18n/i18n'
+import {
+  BrowserChromeFoldedMenuItems,
+  type BrowserChromeOverflowMenuProps
+} from './browser-chrome-folded-tools'
+import {
+  BrowserToolbarAppearanceSub,
+  BrowserToolbarZoomRow
+} from './browser-toolbar-page-display-items'
 
 type BrowserToolbarMenuDropdownProps = {
+  browserPageId: string
   menuOpen: boolean
   onMenuOpenChange: (open: boolean) => void
   allProfiles: BrowserSessionProfile[]
@@ -45,9 +59,15 @@ type BrowserToolbarMenuDropdownProps = {
   onImportFromFile: () => void
   viewportPresetId: BrowserViewportPresetId | null
   onApplyViewportPreset: (nextId: BrowserViewportPresetId | null) => void
+  siteDisplay: BrowserPageSiteDisplay | null
+  onZoomPage: (direction: BrowserPageZoomDirection) => void
+  onSetSiteColorScheme: (colorScheme: BrowserSiteColorScheme | null) => void
+  onOpenSourceFile?: (() => void) | null
+  overflow: BrowserChromeOverflowMenuProps
 }
 
 export function BrowserToolbarMenuDropdown({
+  browserPageId,
   menuOpen,
   onMenuOpenChange,
   allProfiles,
@@ -60,12 +80,18 @@ export function BrowserToolbarMenuDropdown({
   onImportFromBrowser,
   onImportFromFile,
   viewportPresetId,
-  onApplyViewportPreset
+  onApplyViewportPreset,
+  siteDisplay,
+  onZoomPage,
+  onSetSiteColorScheme,
+  onOpenSourceFile = null,
+  overflow
 }: BrowserToolbarMenuDropdownProps): React.JSX.Element {
   return (
     <DropdownMenu modal={false} open={menuOpen} onOpenChange={onMenuOpenChange}>
       <DropdownMenuTrigger asChild>
         <Button
+          ref={overflow.triggerRef}
           size="icon"
           variant="ghost"
           className="h-8 w-8"
@@ -77,7 +103,28 @@ export function BrowserToolbarMenuDropdown({
           <Ellipsis className="size-4" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="end" className="w-56">
+      <DropdownMenuContent
+        align="end"
+        className="w-56"
+        data-browser-page-menu-id={browserPageId}
+        onCloseAutoFocus={overflow.onMenuCloseAutoFocus}
+      >
+        <BrowserChromeFoldedMenuItems
+          tools={overflow.tools}
+          deferUntilClose={overflow.deferUntilClose}
+        />
+        {onOpenSourceFile ? (
+          <>
+            <DropdownMenuItem onSelect={onOpenSourceFile}>
+              <FileCode2 className="mr-2 size-3.5" />
+              {translate(
+                'auto.components.editor.HtmlDocPreview.openSourceControl',
+                'Open source file'
+              )}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+          </>
+        ) : null}
         {allProfiles.map((profile) => {
           const isSelectedProfile = profile.id === effectiveProfileId
           return (
@@ -131,7 +178,7 @@ export function BrowserToolbarMenuDropdown({
             )}
           </DropdownMenuSubTrigger>
           <DropdownMenuPortal>
-            <DropdownMenuSubContent>
+            <DropdownMenuSubContent data-browser-page-menu-id={browserPageId}>
               <BrowserCookieImportMachineNotice />
               {detectedBrowsers.map((browser) =>
                 browser.profiles.length > 1 ? (
@@ -144,7 +191,7 @@ export function BrowserToolbarMenuDropdown({
                       )}
                     </DropdownMenuSubTrigger>
                     <DropdownMenuPortal>
-                      <DropdownMenuSubContent>
+                      <DropdownMenuSubContent data-browser-page-menu-id={browserPageId}>
                         {browser.profiles.map((profile) => (
                           <DropdownMenuItem
                             key={profile.directory}
@@ -183,6 +230,12 @@ export function BrowserToolbarMenuDropdown({
 
         <DropdownMenuSeparator />
 
+        <BrowserToolbarZoomRow display={siteDisplay} onZoom={onZoomPage} />
+        <BrowserToolbarAppearanceSub
+          browserPageId={browserPageId}
+          display={siteDisplay}
+          onSetColorScheme={onSetSiteColorScheme}
+        />
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
             <Monitor className="mr-2 size-3.5" />
@@ -192,7 +245,7 @@ export function BrowserToolbarMenuDropdown({
             )}
           </DropdownMenuSubTrigger>
           <DropdownMenuPortal>
-            <DropdownMenuSubContent>
+            <DropdownMenuSubContent data-browser-page-menu-id={browserPageId}>
               {/* Why: Viewport is a "pick one of N" control, so use a radio group
                   for proper a11y semantics (role="menuitemradio", aria-checked).
                   The "Default" option represents a null preset (no override),

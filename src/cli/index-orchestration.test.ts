@@ -54,6 +54,53 @@ describe('orca cli worktree awareness', () => {
     spawnMock
   })
 
+  it.each([
+    { questionFlag: '--question', questionValue: 'Proceed?', json: true },
+    { questionFlag: '--resume', questionValue: 'msg_pending', json: false }
+  ])('reports oversized ask waits before any request: %o', async (testCase) => {
+    process.env.ORCA_TERMINAL_HANDLE = 'term_worker'
+    callMock.mockResolvedValue({
+      id: 'req_ask',
+      ok: true,
+      result: { answer: 'yes', messageId: 'msg_1', threadId: 'msg_1', timedOut: false },
+      _meta: { runtimeId: 'runtime-1' }
+    })
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
+
+    await main(
+      [
+        'orchestration',
+        'ask',
+        testCase.questionFlag,
+        testCase.questionValue,
+        '--timeout-ms',
+        '14400000',
+        ...(testCase.json ? ['--json'] : [])
+      ],
+      '/tmp/repo'
+    )
+
+    expect(process.exitCode).toBe(1)
+    expect(callMock).not.toHaveBeenCalled()
+    if (testCase.json) {
+      expect(logSpy).toHaveBeenCalledTimes(1)
+      expect(JSON.parse(logSpy.mock.calls[0][0])).toMatchObject({
+        ok: false,
+        error: {
+          code: 'invalid_argument',
+          message: expect.stringMatching(/--timeout-ms.*1800000.*30 minutes/)
+        }
+      })
+      expect(errorSpy).not.toHaveBeenCalled()
+    } else {
+      expect(logSpy).not.toHaveBeenCalled()
+      expect(errorSpy).toHaveBeenCalledWith(
+        expect.stringMatching(/--timeout-ms.*1800000.*30 minutes/)
+      )
+    }
+  })
+
   it('formats group orchestration sends in text mode', async () => {
     process.env.ORCA_TERMINAL_HANDLE = 'term_sender'
     callMock.mockResolvedValueOnce({
@@ -83,6 +130,24 @@ describe('orca cli worktree awareness', () => {
       devMode: false
     })
     expect(logSpy).toHaveBeenCalledWith('Sent 2 messages to 2 recipients')
+  })
+
+  it("refuses an agent session's caller flag naming another caller before any request", async () => {
+    process.env.ORCA_AGENT_SESSION_ID = 'f7a1c0de-1111-4222-8333-444455556666'
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {})
+    try {
+      await main(['orchestration', 'check', '--terminal', 'term_sibling', '--json'], '/tmp/repo')
+    } finally {
+      delete process.env.ORCA_AGENT_SESSION_ID
+    }
+
+    expect(callMock).not.toHaveBeenCalled()
+    expect(process.exitCode).toBe(1)
+    expect(JSON.parse(String(logSpy.mock.calls[0]?.[0]))).toMatchObject({
+      ok: false,
+      error: { code: 'consumer_fenced' }
+    })
+    process.exitCode = undefined
   })
 
   it('rejects no-flag orchestration reset before calling the runtime', async () => {
@@ -147,7 +212,6 @@ describe('orca cli worktree awareness', () => {
     expect(callMock).not.toHaveBeenCalled()
     expect(process.exitCode).toBe(1)
 
-    // Reset exitCode so subsequent tests don't inherit the failure.
     process.exitCode = priorExitCode
     errSpy.mockRestore()
   })

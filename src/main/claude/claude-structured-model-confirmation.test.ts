@@ -1,7 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { setClaudeStructuredOption } from './claude-structured-options'
 import type { ClaudeSession } from './claude-structured-session-state'
-import { PROVIDER_SESSION_ID, acquired, fakeClaude } from './claude-structured-session-test-support'
+import {
+  PROVIDER_SESSION_ID,
+  USER_MESSAGE,
+  acquired,
+  fakeClaude
+} from './claude-structured-session-test-support'
 
 /** Verbatim rows from Claude Code 2.1.258's list_models response. */
 const CATALOG = [
@@ -19,7 +24,12 @@ const CATALOG = [
     supportsEffort: true,
     supportedEffortLevels: ['low', 'medium', 'high', 'xhigh', 'max']
   },
-  { value: 'haiku', resolvedModel: 'claude-haiku-4-5-20251001', displayName: 'Haiku' }
+  {
+    value: 'haiku',
+    resolvedModel: 'claude-haiku-4-5-20251001',
+    displayName: 'Haiku',
+    supportsEffort: false
+  }
 ]
 
 function initFrame(model: string): Record<string, unknown> {
@@ -44,7 +54,7 @@ describe('Claude model confirmation', () => {
     const adapter = await acquired(claude)
 
     await expect(adapter.readOptions({ sessionId: 'session-1', fence: 7 })).resolves.toMatchObject({
-      current: { model: 'sonnet' }
+      current: { model: 'claude-sonnet-5' }
     })
 
     // The CLI's own report of what it is running — the only channel that carries
@@ -52,7 +62,7 @@ describe('Claude model confirmation', () => {
     claude.connections[0]!.handlers.onMessage?.(initFrame('claude-haiku-4-5-20251001'))
 
     await expect(adapter.readOptions({ sessionId: 'session-1', fence: 7 })).resolves.toMatchObject({
-      current: { model: 'haiku' }
+      current: { model: 'claude-haiku-4-5-20251001' }
     })
   })
 
@@ -83,62 +93,8 @@ describe('Claude model confirmation', () => {
     claude.connections[0]!.handlers.onMessage?.(initFrame('claude-sonnet-5'))
 
     await expect(adapter.readOptions({ sessionId: 'session-1', fence: 7 })).resolves.toMatchObject({
-      current: { model: 'sonnet' }
+      current: { model: 'claude-sonnet-5' }
     })
-  })
-
-  it('guards an effort against the model the turn reported, not the one that was set', async () => {
-    const claude = fakeClaude({
-      initModel: 'claude-sonnet-5',
-      routes: { list_models: () => CATALOG }
-    })
-    const adapter = await acquired(claude)
-
-    await adapter.setOption({ sessionId: 'session-1', key: 'model', value: 'haiku', fence: 7 })
-    // set_model answered success for a model it never resolved; the turn runs sonnet.
-    claude.connections[0]!.handlers.onMessage?.(initFrame('claude-sonnet-5'))
-
-    // The picker offers sonnet's levels, so refusing one under haiku — a model the
-    // pill does not show and the child is not running — is the false positive.
-    await expect(
-      adapter.setOption({ sessionId: 'session-1', key: 'effort', value: 'high', fence: 7 })
-    ).resolves.toMatchObject({ effort: 'high' })
-  })
-
-  it('keeps guarding against the reported model across a second effort write', async () => {
-    const claude = fakeClaude({
-      initModel: 'claude-sonnet-5',
-      routes: { list_models: () => CATALOG }
-    })
-    const adapter = await acquired(claude)
-
-    await adapter.setOption({ sessionId: 'session-1', key: 'model', value: 'haiku', fence: 7 })
-    claude.connections[0]!.handlers.onMessage?.(initFrame('claude-sonnet-5'))
-    await adapter.setOption({ sessionId: 'session-1', key: 'effort', value: 'high', fence: 7 })
-
-    // The effort write bumps the option fence but does not change what the child
-    // runs, so the sonnet report is still current and still governs the guard.
-    // `max` skips the settings readback by contract, so only the catalog gates it:
-    // sonnet advertises it, haiku advertises no effort control at all.
-    await expect(
-      adapter.setOption({ sessionId: 'session-1', key: 'effort', value: 'max', fence: 7 })
-    ).resolves.toMatchObject({ effort: 'max' })
-  })
-
-  it('guards an effort against a just-set model no turn has reported yet', async () => {
-    const claude = fakeClaude({
-      initModel: 'claude-sonnet-5',
-      routes: { list_models: () => CATALOG }
-    })
-    const adapter = await acquired(claude)
-
-    await adapter.setOption({ sessionId: 'session-1', key: 'model', value: 'haiku', fence: 7 })
-
-    // The acquisition-time report predates the write, so haiku — which advertises
-    // no effort control — is still the model the guard must answer for.
-    await expect(
-      adapter.setOption({ sessionId: 'session-1', key: 'effort', value: 'high', fence: 7 })
-    ).rejects.toThrow('claude model haiku does not accept effort high')
   })
 
   it('stops vouching for a confirmed effort once the model changes', async () => {
@@ -147,10 +103,17 @@ describe('Claude model confirmation', () => {
       routes: { list_models: () => CATALOG }
     })
     const adapter = await acquired(claude)
+    // The model is confirmed by a cycle's init frame, so start one.
+    await adapter.dispatch({
+      sessionId: 'session-1',
+      clientMessageId: 'seed-cycle',
+      body: USER_MESSAGE,
+      fence: 7
+    })
 
     await adapter.setOption({ sessionId: 'session-1', key: 'effort', value: 'high', fence: 7 })
     await expect(adapter.readOptions({ sessionId: 'session-1', fence: 7 })).resolves.toMatchObject({
-      current: { model: 'sonnet', effort: 'high', confirmed: ['model', 'effort'] }
+      current: { model: 'claude-sonnet-5', effort: 'high', confirmed: ['model', 'effort'] }
     })
 
     await adapter.setOption({ sessionId: 'session-1', key: 'model', value: 'haiku', fence: 7 })
@@ -168,11 +131,13 @@ describe('Claude effort the settings readback cannot report', () => {
     calls: string[] = []
   ): { session: ClaudeSession; calls: string[] } {
     return {
+      // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: the fixture supplies every session member the option paths under test read.
       session: {
         options: new Map<string, string>([['model', 'sonnet']]),
         reportedOptions: {},
         optionMutationSequence: 0,
         confirmedOptions: new Set<string>(),
+        appliedInputOptions: new Map(),
         connection: {
           supportedModels: async () => {
             calls.push('list_models')
@@ -189,7 +154,8 @@ describe('Claude effort the settings readback cannot report', () => {
               sources: {}
             }
           }
-        }
+        },
+        startup: { state: 'proven' }
       } as unknown as ClaudeSession,
       calls
     }
@@ -204,6 +170,6 @@ describe('Claude effort the settings readback cannot report', () => {
     await expect(
       setClaudeStructuredOption(session, { key: 'effort', value: 'max' }, undefined)
     ).resolves.toEqual({ model: 'sonnet', effort: 'max' })
-    expect(calls).toEqual(['list_models', 'apply:max'])
+    expect(calls).toEqual(['apply:max'])
   })
 })

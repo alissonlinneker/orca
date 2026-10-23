@@ -58,6 +58,7 @@ export function stageOrchestrationMailboxPointer<TWaiter extends OrchestrationMe
     return
   }
   const flight = args.state.beginFlight(ptyId)
+  flight.processIncarnation = expectedTarget.processIncarnation
   flight.stagedMessageIds = args.messages.map((message) => message.id)
   try {
     if (
@@ -151,7 +152,7 @@ function finishPointerWriteAndStageEnter<TWaiter extends OrchestrationMessageWai
         isCursorAgentTitle
       )
     ) {
-      db.markAsDelivered(flight.stagedMessageIds)
+      db.markAsDelivered(flight.stagedMessageIds, args.mailboxHandle)
       args.state.clearWatermark(args.mailboxHandle, args.newestSequence, ptyId)
       args.redrive(args.mailboxHandle)
       return

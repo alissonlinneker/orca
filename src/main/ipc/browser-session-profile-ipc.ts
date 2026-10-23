@@ -14,16 +14,35 @@ import {
 import type {
   BrowserCookieImportResult,
   BrowserSessionProfile,
-  BrowserSessionProfileCreateOptions,
   BrowserSessionProfileScope
 } from '../../shared/browser-workspace-types'
+import type { ManagedBrowserProfileOwner } from '../../shared/browser-profile-scope'
+import { ensureManagedBrowserProfile } from '../browser/browser-managed-session-profiles'
+import {
+  getBrowserIdentityModeStatus,
+  setBrowserIdentityMode
+} from '../browser/browser-identity-mode-store'
+import {
+  listBrowserSitePermissions,
+  setBrowserSitePermissionDecisions
+} from '../browser/browser-site-permission-store'
+import {
+  isBrowserSitePermission,
+  isBrowserSitePermissionDecision,
+  type BrowserSitePermissionEntry
+} from '../../shared/browser-site-permission'
 
 export function registerBrowserSessionProfileHandlers(): void {
   ipcMain.removeHandler('browser:session:listProfiles')
   ipcMain.removeHandler('browser:session:createProfile')
   ipcMain.removeHandler('browser:session:deleteProfile')
+  ipcMain.removeHandler('browser:session:ensureManagedProfile')
+  ipcMain.removeHandler('browser:identity:get')
+  ipcMain.removeHandler('browser:identity:set')
   ipcMain.removeHandler('browser:session:importCookies')
   ipcMain.removeHandler('browser:session:resolvePartition')
+  ipcMain.removeHandler('browser:sitePermissions:list')
+  ipcMain.removeHandler('browser:sitePermissions:set')
 
   ipcMain.handle('browser:session:listProfiles', (event): BrowserSessionProfile[] => {
     if (!isTrustedBrowserRenderer(event.sender)) {
@@ -36,19 +55,43 @@ export function registerBrowserSessionProfileHandlers(): void {
     'browser:session:createProfile',
     async (
       event,
-      args: {
-        scope: BrowserSessionProfileScope
-        label: string
-      } & BrowserSessionProfileCreateOptions
+      args: { scope: BrowserSessionProfileScope; label: string }
     ): Promise<BrowserSessionProfile | null> => {
       if (!isTrustedBrowserRenderer(event.sender)) {
         return null
       }
-      return await browserSessionRegistry.createProfile(args.scope, args.label, {
-        userAgentMode: args.userAgentMode
-      })
+      return await browserSessionRegistry.createProfile(args.scope, args.label)
     }
   )
+
+  ipcMain.handle(
+    'browser:session:ensureManagedProfile',
+    (event, args: { owner: ManagedBrowserProfileOwner; label: string }) =>
+      isTrustedBrowserRenderer(event.sender)
+        ? ensureManagedBrowserProfile(args?.owner, args?.label)
+        : null
+  )
+
+  ipcMain.handle('browser:identity:get', (event) => {
+    if (!isTrustedBrowserRenderer(event.sender)) {
+      return null
+    }
+    return getBrowserIdentityModeStatus()
+  })
+
+  ipcMain.handle('browser:identity:set', async (event, mode: unknown) => {
+    if (!isTrustedBrowserRenderer(event.sender)) {
+      return null
+    }
+    // Why reject rather than coerce: the RPC door validates against z.enum(['clean', 'native'])
+    // and rejects. Coercing an unrecognized value to 'clean' made one concept answer an unknown
+    // value two different ways, and reported success for a mode that was quietly replaced —
+    // silently downgrading a future mode name the caller believed was honoured.
+    if (mode !== 'clean' && mode !== 'native') {
+      throw new Error(`Unsupported browser identity mode: ${String(mode)}`)
+    }
+    return setBrowserIdentityMode(mode)
+  })
 
   ipcMain.handle(
     'browser:session:deleteProfile',
@@ -96,6 +139,47 @@ export function registerBrowserSessionProfileHandlers(): void {
         return null
       }
       return browserSessionRegistry.resolvePartition(args.profileId)
+    }
+  )
+
+  ipcMain.handle(
+    'browser:sitePermissions:list',
+    (event, args: { profileId: string }): BrowserSitePermissionEntry[] => {
+      if (
+        !isTrustedBrowserRenderer(event.sender) ||
+        !browserSessionRegistry.getProfile(args.profileId)
+      ) {
+        return []
+      }
+      return listBrowserSitePermissions(args.profileId)
+    }
+  )
+
+  ipcMain.handle(
+    'browser:sitePermissions:set',
+    (
+      event,
+      args: { profileId: string; origin: string; permission: unknown; decision: unknown }
+    ): BrowserSitePermissionEntry[] => {
+      if (
+        !isTrustedBrowserRenderer(event.sender) ||
+        !browserSessionRegistry.getProfile(args.profileId)
+      ) {
+        return []
+      }
+      if (
+        !isBrowserSitePermission(args.permission) ||
+        (args.decision !== null && !isBrowserSitePermissionDecision(args.decision))
+      ) {
+        throw new Error('Unsupported site permission change')
+      }
+      setBrowserSitePermissionDecisions(
+        args.profileId,
+        args.origin,
+        [args.permission],
+        args.decision
+      )
+      return listBrowserSitePermissions(args.profileId)
     }
   )
 

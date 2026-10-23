@@ -1,3 +1,4 @@
+import { collectCollidingRetractionPaneKeys } from './retraction-pane-ownership'
 import type { WebSessionTabsSyncState } from './state'
 import type { applyActiveStateUpdates } from './apply-active-state'
 import { buildMirroredAgentStatusPatch } from './agent-status-patch'
@@ -6,6 +7,9 @@ import {
   buildRetractedMirroredTabSweepPatch
 } from './agent-status-primitives'
 import { isWebSessionTabsWorktreeRemovalFrame } from './session-tabs-inventory-absence'
+import { adoptMirroredEditorBuffers } from '../../store/slices/editor/buffers/editor-buffer-record'
+import { buildEditorBufferViewIndex } from '../../store/slices/editor/buffers/editor-buffer-views'
+import { editorBufferIdForFile } from '../../store/slices/editor/buffers/editor-buffer-identity-cache'
 
 type FinalPatchContext = ReturnType<typeof applyActiveStateUpdates>
 
@@ -16,6 +20,7 @@ export function buildWebSessionTabsFinalPatch(
   const {
     state,
     snapshot,
+    environmentId,
     worktreeId,
     now,
     batchContext,
@@ -34,6 +39,7 @@ export function buildWebSessionTabsFinalPatch(
     nextTabBarOrderByWorktree,
     nextPtyIdsByTabId,
     nextTerminalLayoutsByTabId,
+    nextLocalOnlyScrollbackByTabId,
     nextUnreadTerminalTabs,
     pendingStartupByTabId,
     nextPendingStartupByTabId,
@@ -52,11 +58,22 @@ export function buildWebSessionTabsFinalPatch(
     nextActiveTabTypeByWorktree
   } = context
 
+  // Capture ownership before the batch reducer removes rows from its mutable state.
+  const retractionPaneKeys = collectCollidingRetractionPaneKeys(
+    state,
+    removedTerminalResourceIds,
+    environmentId,
+    worktreeId,
+    batchContext
+  )
   const agentStatusPatch = buildMirroredAgentStatusPatch(
     state,
     currentTerminalTabs,
     terminalSurfaceTabs,
     mirroredTerminalTabs,
+    environmentId,
+    worktreeId,
+    new Set(isWebSessionTabsWorktreeRemovalFrame(snapshot) ? [] : removedTerminalResourceIds),
     now,
     batchContext
   )
@@ -65,10 +82,10 @@ export function buildWebSessionTabsFinalPatch(
     ? null
     : buildRetractedMirroredTabSweepPatch(
         state,
-        worktreeId,
         nextTabsByWorktree,
         agentStatusPatch,
         removedTerminalResourceIds,
+        retractionPaneKeys,
         batchContext
       )
   const remirroredClosedTabLiftPatch = buildRemirroredClosedTabMarkerLiftPatch(
@@ -77,11 +94,27 @@ export function buildWebSessionTabsFinalPatch(
     mirroredTerminalIds
   )
 
+  const adoptedEditorBuffers =
+    nextOpenFiles === state.openFiles
+      ? null
+      : adoptMirroredEditorBuffers(
+          state.editorBuffers,
+          nextOpenFiles,
+          // Why the live index for existing views: it holds sticky detachments. New views take the
+          // resolver the record middleware uses (host views of one file share a record).
+          buildEditorBufferViewIndex(
+            nextOpenFiles,
+            (file) => state.editorBufferIdOf?.[file.id] ?? editorBufferIdForFile(file, state)
+          )
+        )
+
   const patch: Partial<WebSessionTabsSyncState> = {
     ...agentStatusPatch,
     ...retractedTabSweepPatch,
     ...remirroredClosedTabLiftPatch,
-    ...(nextOpenFiles !== state.openFiles ? { openFiles: nextOpenFiles } : {}),
+    ...(adoptedEditorBuffers
+      ? { openFiles: adoptedEditorBuffers.views, editorBuffers: adoptedEditorBuffers.editorBuffers }
+      : {}),
     ...(nextTabsByWorktree !== state.tabsByWorktree ? { tabsByWorktree: nextTabsByWorktree } : {}),
     ...(nextBrowserTabsByWorktree !== state.browserTabsByWorktree
       ? { browserTabsByWorktree: nextBrowserTabsByWorktree }
@@ -104,6 +137,9 @@ export function buildWebSessionTabsFinalPatch(
     ...(nextPtyIdsByTabId !== state.ptyIdsByTabId ? { ptyIdsByTabId: nextPtyIdsByTabId } : {}),
     ...(nextTerminalLayoutsByTabId !== state.terminalLayoutsByTabId
       ? { terminalLayoutsByTabId: nextTerminalLayoutsByTabId }
+      : {}),
+    ...(nextLocalOnlyScrollbackByTabId !== state.localOnlyScrollbackByTabId
+      ? { localOnlyScrollbackByTabId: nextLocalOnlyScrollbackByTabId }
       : {}),
     ...(nextUnreadTerminalTabs !== state.unreadTerminalTabs
       ? { unreadTerminalTabs: nextUnreadTerminalTabs }

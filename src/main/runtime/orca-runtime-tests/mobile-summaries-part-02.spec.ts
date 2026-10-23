@@ -1,4 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
+import { bindPaneFirst } from '../bind-first-pane.test-fixture'
+import { makeAgentStatusStoreWiring } from '../agent-status-store-wiring.test-fixture'
 import {
   AGENT_STATUS_STALE_AFTER_MS,
   MOCK_GIT_WORKTREES,
@@ -254,23 +256,18 @@ describe('OrcaRuntimeService', () => {
   })
 
   it('keeps a fresh OSC row when the cached hook row for the same pane is older', async () => {
-    const now = Date.now()
     const leafId = '44444444-4444-4444-8444-444444444444'
     const paneKey = `tab-1:${leafId}`
-    const runtime = new OrcaRuntimeService(store, undefined, {
-      getAgentStatusSnapshot: () => [
-        {
-          paneKey,
-          worktreeId: TEST_WORKTREE_ID,
-          tabId: 'tab-1',
-          state: 'working',
-          prompt: 'stale hook row',
-          agentType: 'claude',
-          connectionId: null,
-          receivedAt: now - AGENT_STATUS_STALE_AFTER_MS - 1,
-          stateStartedAt: now - AGENT_STATUS_STALE_AFTER_MS - 100
-        }
-      ]
+    const statusWiring = makeAgentStatusStoreWiring()
+    const runtime = new OrcaRuntimeService(store, undefined, statusWiring.deps)
+    statusWiring.statusStore.ingestTerminalStatus({
+      paneKey,
+      tabId: 'tab-1',
+      worktreeId: TEST_WORKTREE_ID,
+      connectionId: null,
+      // Same agent as the OSC turn below: the store resolves pane identity itself, and a
+      // cross-agent flip inside the inheritance window is a different rule's subject.
+      payload: { state: 'working', prompt: 'earlier hook row', agentType: 'codex' }
     })
     runtime.attachWindow(1)
     runtime.syncWindowGraph(1, {
@@ -515,10 +512,17 @@ describe('OrcaRuntimeService', () => {
         }
       ]
     })
+    bindPaneFirst(runtime, {
+      worktreeId: TEST_WORKTREE_ID,
+      tabId: 'daemon-tab',
+      leafId: '77777777-7777-4777-8777-777777777777',
+      ptyId: 'daemon-pty'
+    })
     // paneKey-only record: the tabId rescue must not be what keeps this row.
     runtime['recordPtyWorktree']('daemon-pty', TEST_WORKTREE_ID, {
       connected: true,
-      paneKey
+      paneKey,
+      surfaceRecordedAtGraphSequence: runtime['graphSequence']
     })
 
     const { worktrees } = await runtime.getWorktreePs()
@@ -553,10 +557,17 @@ describe('OrcaRuntimeService', () => {
         }
       ]
     })
+    bindPaneFirst(runtime, {
+      worktreeId: TEST_WORKTREE_ID,
+      tabId: 'daemon-tab',
+      leafId: '99999999-9999-4999-8999-999999999998',
+      ptyId: 'daemon-pty-2'
+    })
     runtime['recordPtyWorktree']('daemon-pty-2', TEST_WORKTREE_ID, {
       connected: true,
       tabId: 'daemon-tab',
-      paneKey: 'daemon-tab:99999999-9999-4999-8999-999999999998'
+      paneKey: 'daemon-tab:99999999-9999-4999-8999-999999999998',
+      surfaceRecordedAtGraphSequence: runtime['graphSequence']
     })
 
     const { worktrees } = await runtime.getWorktreePs()
@@ -567,19 +578,30 @@ describe('OrcaRuntimeService', () => {
     ])
   })
 
-  it('keeps a retained OSC row via its connected PTY after the pane binding is cleared', async () => {
+  it('keeps an OSC row via its connected PTY after the pane binding is cleared', async () => {
     // A controller incarnation change nulls pty.tabId/paneKey while the PTY
-    // stays connected (adoptControllerTerminalHandle); the ptyId conjunct is
-    // then the only rescue for the retained OSC row.
+    // stays connected (adoptControllerTerminalHandle); the terminal handle the row was
+    // stamped with is then the only rescue left for it.
     const { runtimeStore } = makeRuntimeStoreWithWorkspaceSession({
       ...getDefaultWorkspaceSession(),
       tabsByWorktree: {}
     })
-    const runtime = new OrcaRuntimeService(runtimeStore as never)
+    const runtime = new OrcaRuntimeService(
+      runtimeStore as never,
+      undefined,
+      makeAgentStatusStoreWiring().deps
+    )
+    bindPaneFirst(runtime, {
+      worktreeId: TEST_WORKTREE_ID,
+      tabId: 'osc-tab',
+      leafId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      ptyId: 'osc-pty'
+    })
     runtime['recordPtyWorktree']('osc-pty', TEST_WORKTREE_ID, {
       connected: true,
       tabId: 'osc-tab',
-      paneKey: 'osc-tab:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb'
+      paneKey: 'osc-tab:bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      surfaceRecordedAtGraphSequence: runtime['graphSequence']
     })
     runtime.onPtyData(
       'osc-pty',
@@ -604,31 +626,32 @@ describe('OrcaRuntimeService', () => {
       ...getDefaultWorkspaceSession(),
       tabsByWorktree: {}
     })
-    const runtime = new OrcaRuntimeService(runtimeStore as never, undefined, {
-      getAgentStatusSnapshot: () => [
-        {
-          paneKey,
-          worktreeId: TEST_WORKTREE_ID,
-          tabId: 'race-tab',
-          state: 'working',
-          prompt: 'hook-fresh agent',
-          agentType: 'codex',
-          connectionId: null,
-          receivedAt: Date.now() + 60_000,
-          stateStartedAt: Date.now() - 100
-        }
-      ]
+    const statusWiring = makeAgentStatusStoreWiring()
+    const runtime = new OrcaRuntimeService(runtimeStore as never, undefined, statusWiring.deps)
+    bindPaneFirst(runtime, {
+      worktreeId: TEST_WORKTREE_ID,
+      tabId: 'race-tab',
+      leafId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      ptyId: 'race-pty'
     })
     runtime['recordPtyWorktree']('race-pty', TEST_WORKTREE_ID, {
       connected: true,
       tabId: 'race-tab',
-      paneKey
+      paneKey,
+      surfaceRecordedAtGraphSequence: runtime['graphSequence']
     })
     runtime.onPtyData(
       'race-pty',
       '\x1b]9999;{"state":"working","prompt":"osc ping","agentType":"codex"}\x07',
       1
     )
+    statusWiring.statusStore.ingestTerminalStatus({
+      paneKey,
+      tabId: 'race-tab',
+      worktreeId: TEST_WORKTREE_ID,
+      connectionId: null,
+      payload: { state: 'working', prompt: 'hook-fresh agent', agentType: 'codex' }
+    })
     const pty = runtime['ptysById'].get('race-pty')!
     pty.tabId = null
     pty.paneKey = null

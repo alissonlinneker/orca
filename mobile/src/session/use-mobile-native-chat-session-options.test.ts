@@ -73,6 +73,56 @@ describe('useMobileNativeChatSessionOptions', () => {
     expect(api!.snapshot).toEqual([])
   })
 
+  it('shows an OMP session under the model its hook reported', () => {
+    // OMP seeds no models, so the pill exists only once the hook names one.
+    mount({ agent: 'omp' })
+    expect(api!.snapshot).toEqual([])
+    update({ reportedModel: 'deepseek/deepseek-v4-pro' })
+    const model = api!.snapshot[0]!
+    expect(model).toMatchObject({ id: 'model', category: 'model', valueSource: 'reported' })
+    expect(model.kind).toMatchObject({
+      type: 'select',
+      currentValue: 'deepseek/deepseek-v4-pro',
+      choices: [{ value: 'deepseek/deepseek-v4-pro', label: 'deepseek/deepseek-v4-pro' }]
+    })
+  })
+
+  it.each(['custom/current', 'deepseek/deepseek-v4-pro-new'])(
+    'keeps the exact OMP report %s with discovered choices',
+    (reportedModel) => {
+      mount({
+        agent: 'omp',
+        reportedModel,
+        discoveredModels: [{ id: 'deepseek/deepseek-v4-pro', label: 'DeepSeek', options: [] }]
+      })
+      expect(api!.snapshot[0]).toMatchObject({ valueSource: 'reported' })
+      expect(api!.snapshot[0]!.kind).toMatchObject({
+        currentValue: reportedModel,
+        choices: expect.arrayContaining([expect.objectContaining({ value: reportedModel })])
+      })
+    }
+  )
+
+  it('switches an OMP session with /orca-model <selector>', async () => {
+    mount({
+      agent: 'omp',
+      reportedModel: 'deepseek/deepseek-v4-pro',
+      modelSwitchCommand: 'orca-model'
+    })
+    let applied: boolean | undefined
+    await act(async () => {
+      applied = await api!.setOption('model', 'minimax-cn/MiniMax-M3')
+    })
+    expect(applied).toBe(true)
+    expect(dispatchCommand).toHaveBeenCalledWith('/orca-model minimax-cn/MiniMax-M3')
+    const model = api!.snapshot[0]!
+    expect(model).toMatchObject({ valueSource: 'dispatched' })
+    expect(model.kind).toMatchObject({ currentValue: 'minimax-cn/MiniMax-M3' })
+    // The hook confirming the switch is the next report; a changed value is evidence.
+    update({ reportedModel: 'minimax-cn/MiniMax-M3' })
+    expect(api!.snapshot[0]).toMatchObject({ valueSource: 'reported' })
+  })
+
   it('applies a model pick through the catalog modelApply command', async () => {
     mount()
     let applied: boolean | undefined
@@ -106,6 +156,31 @@ describe('useMobileNativeChatSessionOptions', () => {
     expect(dispatchCommand).toHaveBeenCalledWith('/model', { delivery: 'type' })
     expect(onAgentPicker).toHaveBeenCalledOnce()
   })
+
+  it.each([null, 'gpt-5.6-terra'])(
+    'tracks an unlisted Codex report after %s without inventing effort choices',
+    async (initialModel) => {
+      mount({ agent: 'codex', reportedModel: initialModel })
+      update({ reportedModel: 'gpt-6.1-sol' })
+      expect(api!.snapshot).toHaveLength(1)
+      expect(api!.snapshot[0]).toMatchObject({
+        valueSource: 'reported',
+        action: { type: 'agent-picker' },
+        kind: {
+          currentValue: 'gpt-6.1-sol',
+          choices: expect.arrayContaining([{ value: 'gpt-6.1-sol', label: 'gpt-6.1-sol' }])
+        }
+      })
+      const snapshot = api!.snapshot
+      update({ reportedModel: null })
+      update({ reportedModel: 'gpt-6.1-sol' })
+      expect(api!.snapshot).toBe(snapshot)
+      await act(async () => {
+        await api!.invokeAction('model')
+      })
+      expect(dispatchCommand).toHaveBeenCalledWith('/model', { delivery: 'type' })
+    }
+  )
 
   it('types the Codex effort picker command', async () => {
     mount({ agent: 'codex', reportedModel: 'gpt-5.5' })
@@ -172,7 +247,7 @@ describe('useMobileNativeChatSessionOptions', () => {
     })
     expect(api!.snapshot[0]!.kind).toMatchObject({ currentValue: 'opus' })
     // Leaving the tab and returning re-delivers the SAME session-start report,
-    // which cannot have observed the `/model opus` sent after it.
+    // which cannot have observed the `/orca-model opus` sent after it.
     update({ scopeKey: 'host\0worktree\0other' })
     update({ scopeKey: 'host\0worktree\0tab' })
     expect(api!.snapshot[0]).toMatchObject({ valueSource: 'dispatched' })

@@ -5,22 +5,26 @@
 // keeps the cached summaries and reconnects; a fresh snapshot merges over them.
 // Which sessions are listed is the tab map's decision, so the feed never retracts a summary.
 
-import type {
-  AgentSessionStatusEvent,
-  AgentSessionStatusSummary
-} from '../../../shared/agent-session-wire'
-import { AGENT_SESSION_STATUS_FEED_RUNTIME_CAPABILITY } from '../../../shared/protocol-version'
+import { AGENT_SESSION_WORKSPACE_SLEEP_MARK_RUNTIME_CAPABILITY } from '../../../shared/agent-session-workspace-sleep'
+import type { AgentSessionStatusEvent } from '../../../shared/agent-session-wire'
 import {
-  runtimeEnvironmentSupportsCapability,
-  type RuntimeClientTarget
-} from './runtime-rpc-client'
+  foldAgentSessionStatusEvent,
+  revokeAgentSessionStatusLive,
+  type AgentSessionStatusSnapshot
+} from '../../../shared/agent-session-status-snapshot-fold'
+import { AGENT_SESSION_STATUS_FEED_RUNTIME_CAPABILITY } from '../../../shared/protocol-version'
+import { runtimeEnvironmentSupportsCapability } from './runtime-rpc-client'
+import type { RuntimeClientTarget } from '../../../shared/runtime-client-target'
 import { subscribeStructuredAgentSessionStatus } from './structured-agent-session-client'
 
-export type StructuredAgentSessionStatusSnapshot = ReadonlyMap<string, AgentSessionStatusSummary>
+export type StructuredAgentSessionStatusSnapshot = AgentSessionStatusSnapshot
 
 export type StructuredAgentSessionStatusFeedOwner = {
   activate: () => () => void
   getSnapshot: () => StructuredAgentSessionStatusSnapshot
+  getSessionSleepState: (sessionId: string) => number | null | undefined
+  getNamingActive: (sessionId: string) => boolean | null
+  getSessionObservation: (sessionId: string) => 'live' | 'unverifiable'
   subscribe: (listener: () => void) => () => void
 }
 
@@ -37,8 +41,13 @@ export function structuredAgentSessionStatusFeedKey(target: RuntimeClientTarget)
 
 function createOwner(target: RuntimeClientTarget): OwnedStatusFeed {
   let snapshot: StructuredAgentSessionStatusSnapshot = new Map()
+  let namingActiveSessionIds: Set<string> | null = null
+  const confirmedSessions = new Set<string>()
+  // Disconnect revokes live execution, but each chat's last Sleep answer still holds.
+  const knownSleep = new Map<string, number | null>()
   const listeners = new Set<() => void>()
   const activations = new Set<symbol>()
+  let sleepResolved = false
   let generation = 0
   let handle: { unsubscribe: () => void } | null = null
   let reconnectTimer: ReturnType<typeof setTimeout> | null = null
@@ -55,21 +64,29 @@ function createOwner(target: RuntimeClientTarget): OwnedStatusFeed {
   }
   const applyEvent = (event: AgentSessionStatusEvent): void => {
     if (event.type === 'snapshot') {
+      // Naming metadata precedes the full status snapshot and says nothing about Sleep.
+      sleepResolved ||= event.namingActiveSessionIds === undefined
       reconnectAttempt = 0
-      // Merged, not replaced: a restarted host restores its readable sessions asynchronously, so
-      // the first snapshot can be empty and dropping those rows flickers every one to no-status.
-      const next = new Map(snapshot)
-      for (const session of event.sessions) {
-        next.set(session.sessionId, session)
+      if (event.namingActiveSessionIds !== undefined) {
+        namingActiveSessionIds = new Set(event.namingActiveSessionIds)
       }
-      setSnapshot(next)
+      for (const session of event.sessions) {
+        confirmedSessions.add(session.sessionId)
+        knownSleep.set(
+          session.sessionId,
+          session.hostExecutionOwned ? null : (session.sleptAt ?? null)
+        )
+      }
+    } else if (event.type === 'status') {
+      confirmedSessions.add(event.session.sessionId)
+      knownSleep.set(
+        event.session.sessionId,
+        event.session.hostExecutionOwned ? null : (event.session.sleptAt ?? null)
+      )
+    } else {
       return
     }
-    if (event.type === 'status') {
-      const next = new Map(snapshot)
-      next.set(event.session.sessionId, event.session)
-      setSnapshot(next)
-    }
+    setSnapshot(foldAgentSessionStatusEvent(snapshot, event))
   }
   const active = (candidate: number): boolean => activations.size > 0 && candidate === generation
   const clearReconnect = (): void => {
@@ -81,6 +98,12 @@ function createOwner(target: RuntimeClientTarget): OwnedStatusFeed {
   const dropHandle = (): void => {
     handle?.unsubscribe()
     handle = null
+  }
+  const revokeSnapshotOwnership = (): void => {
+    const next = revokeAgentSessionStatusLive(snapshot)
+    if (next !== snapshot) {
+      setSnapshot(next)
+    }
   }
   let open = (): void => {}
   const scheduleReconnect = (candidate: number): void => {
@@ -96,6 +119,20 @@ function createOwner(target: RuntimeClientTarget): OwnedStatusFeed {
       }
     }, delay)
   }
+  // Losing contact is never exit: the sessions go unverifiable and this client stops
+  // claiming host-owned execution, but nothing here settles them.
+  const loseConnection = (candidate: number): void => {
+    if (candidate !== generation) {
+      return
+    }
+    generation += 1
+    namingActiveSessionIds = null
+    confirmedSessions.clear()
+    revokeSnapshotOwnership()
+    emit()
+    dropHandle()
+    scheduleReconnect(generation)
+  }
   const subscribeToHost = (candidate: number): void => {
     void subscribeStructuredAgentSessionStatus(
       target,
@@ -104,22 +141,19 @@ function createOwner(target: RuntimeClientTarget): OwnedStatusFeed {
           return
         }
         if (event.type === 'end') {
-          dropHandle()
-          scheduleReconnect(candidate)
+          loseConnection(candidate)
           return
         }
         applyEvent(event)
       },
       () => {
         if (active(candidate)) {
-          dropHandle()
-          scheduleReconnect(candidate)
+          loseConnection(candidate)
         }
       },
       () => {
         if (active(candidate)) {
-          dropHandle()
-          scheduleReconnect(candidate)
+          loseConnection(candidate)
         }
       }
     )
@@ -130,7 +164,7 @@ function createOwner(target: RuntimeClientTarget): OwnedStatusFeed {
           opened.unsubscribe()
         }
       })
-      .catch(() => scheduleReconnect(candidate))
+      .catch(() => loseConnection(candidate))
   }
   open = (): void => {
     const candidate = ++generation
@@ -141,13 +175,23 @@ function createOwner(target: RuntimeClientTarget): OwnedStatusFeed {
       return
     }
     const environmentId = target.environmentId
-    void runtimeEnvironmentSupportsCapability(
-      environmentId,
-      AGENT_SESSION_STATUS_FEED_RUNTIME_CAPABILITY
-    )
-      .then((supported) => {
+    void Promise.all([
+      runtimeEnvironmentSupportsCapability(
+        environmentId,
+        AGENT_SESSION_STATUS_FEED_RUNTIME_CAPABILITY
+      ),
+      runtimeEnvironmentSupportsCapability(
+        environmentId,
+        AGENT_SESSION_WORKSPACE_SLEEP_MARK_RUNTIME_CAPABILITY
+      )
+    ])
+      .then(([supported, marksSleep]) => {
         if (!active(candidate)) {
           return
+        }
+        if (!marksSleep || !supported) {
+          sleepResolved = true
+          emit()
         }
         // A host without the method is terminal, not a fault: retrying would relay-probe
         // forever. A failed probe is not an answer, so that path still reconnects.
@@ -157,13 +201,18 @@ function createOwner(target: RuntimeClientTarget): OwnedStatusFeed {
         }
         console.warn('[structured-session-status] host too old for the status feed', environmentId)
       })
-      .catch(() => scheduleReconnect(candidate))
+      .catch(() => loseConnection(candidate))
   }
   const stop = (): void => {
     generation += 1
     clearReconnect()
     dropHandle()
+    revokeSnapshotOwnership()
     reconnectAttempt = 0
+    // Teardown only runs once nothing is activated, so re-confirmation is the next
+    // subscribe's job and there is no mounted reader left to notify.
+    namingActiveSessionIds = null
+    confirmedSessions.clear()
   }
 
   return {
@@ -181,6 +230,13 @@ function createOwner(target: RuntimeClientTarget): OwnedStatusFeed {
       }
     },
     getSnapshot: () => snapshot,
+    getSessionSleepState: (sessionId) => {
+      const known = knownSleep.get(sessionId)
+      return known !== undefined ? known : sleepResolved ? null : undefined
+    },
+    getNamingActive: (sessionId) => namingActiveSessionIds?.has(sessionId) ?? null,
+    getSessionObservation: (sessionId) =>
+      confirmedSessions.has(sessionId) ? 'live' : 'unverifiable',
     subscribe: (listener) => {
       listeners.add(listener)
       return () => listeners.delete(listener)

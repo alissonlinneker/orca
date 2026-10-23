@@ -3,18 +3,16 @@ import { WslTranscriptFsError } from '../native-chat/wsl-transcript-fs-gate'
 import { join } from 'node:path'
 import type { AiVaultSession } from '../../shared/ai-vault-types'
 import type { FileWithMtime, SessionAccumulator } from './session-scanner-types'
+import type { TranscriptMessageSink } from './session-transcript-consumers'
 import {
-  addPreviewMessage,
   createAccumulator,
   finalizeSession,
-  seedFullFirstUserPrompt,
   sessionIdFromFileName,
   updateTimeline
 } from './session-scanner-accumulator'
-import { extractFullFirstUserPromptText } from './session-scanner-first-user-prompt'
+import { addSessionContent, addPreviewMessage } from './session-scanner-messages'
 import {
   asRecord,
-  extractPreviewContentText,
   extractString,
   findOpenCodeStorageRoot,
   normalizeTitleText,
@@ -23,18 +21,24 @@ import {
   tokenTotal
 } from './session-scanner-values'
 
+/** The session's cwd; a scope walk reads it from the session file without its messages. */
+export function openCodeSessionCwd(record: Record<string, unknown>): string | null {
+  return extractString(record.directory)
+}
+
 export async function parseOpenCodeSessionFile(
   file: FileWithMtime,
-  platform: NodeJS.Platform = process.platform
+  platform: NodeJS.Platform = process.platform,
+  messages?: TranscriptMessageSink
 ): Promise<AiVaultSession | null> {
   const record = asRecord(JSON.parse(await wslGatedReadFile(file.path, 'utf-8', 'scan')) as unknown)
   if (!record) {
     return null
   }
   const sessionId = extractString(record.id) ?? sessionIdFromFileName(file.path)
-  const accumulator = createAccumulator({ agent: 'opencode', file, sessionId })
+  const accumulator = createAccumulator({ agent: 'opencode', file, sessionId, messages })
   accumulator.title = normalizeTitleText(extractString(record.title) ?? '')
-  accumulator.cwd = extractString(record.directory)
+  accumulator.cwd = openCodeSessionCwd(record)
   updateTimeline(accumulator, timeObjectValue(record.time, 'created'))
   updateTimeline(accumulator, timeObjectValue(record.time, 'updated'))
   await consumeOpenCodeMessages(accumulator, findOpenCodeStorageRoot(file.path), sessionId)
@@ -110,22 +114,15 @@ export async function consumeOpenCodeMessages(
       if (role === 'user') {
         accumulator.title ??= extractString(summary?.title) ?? extractString(summary?.body)
       }
-      // Why: the summary fallbacks are AI-generated. Seed the copyable first
-      // prompt from real typed content only, never from a summary of a
-      // harness-injected turn. Extraction stays inside the thunk so list scans
-      // (capture mode `none`) never pay for it.
-      seedFullFirstUserPrompt(accumulator, role, () =>
-        extractFullFirstUserPromptText(message.content)
-      )
-      addPreviewMessage(accumulator, {
-        role,
-        text:
-          extractPreviewContentText(message.content) ??
-          extractString(summary?.body) ??
-          extractString(summary?.title),
-        timestamp: timeObjectValue(message.time, 'created'),
-        seedFirstUserPrompt: false
-      })
+      const timestamp = timeObjectValue(message.time, 'created')
+      const hasPreview = addSessionContent(accumulator, role, message.content, timestamp)
+      if (!hasPreview) {
+        addPreviewMessage(accumulator, {
+          role,
+          text: extractString(summary?.body) ?? extractString(summary?.title),
+          timestamp
+        })
+      }
       accumulator.model =
         extractString(asRecord(message.model)?.modelID) ||
         extractString(message.modelID) ||

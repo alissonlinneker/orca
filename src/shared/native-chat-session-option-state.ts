@@ -151,13 +151,22 @@ export function applyNativeChatReportedSessionOptions(
   return changed
 }
 
+/** Resolves a hook-reported model string to a catalog id: exact id, then label,
+ *  then the longest id the report contains. A catalog that seeds no models keeps
+ *  the report itself. Callers may retain unlisted selectors without fuzzy id matching. */
 export function matchNativeChatCatalogModelId(
   catalog: AgentSessionOptionCatalog,
-  reported: string
+  reported: string,
+  options?: { allowUnlisted?: boolean }
 ): string | null {
   const normalized = reported.trim().toLowerCase()
   if (!normalized) {
     return null
+  }
+  // Why: a catalog with no seed (OMP) has nothing to match against, yet the hook's
+  // `provider/id` IS the selector the CLI accepts back — keep it as the tracked row.
+  if (catalog.models.length === 0) {
+    return reported.trim()
   }
   const exact = catalog.models.find((model) => model.id.toLowerCase() === normalized)
   if (exact) {
@@ -167,8 +176,17 @@ export function matchNativeChatCatalogModelId(
   if (byLabel) {
     return byLabel.id
   }
-  const containing = [...catalog.models]
-    .sort((left, right) => right.id.length - left.id.length)
-    .find((model) => normalized.includes(model.id.toLowerCase()))
-  return containing?.id ?? null
+  if (options?.allowUnlisted && !/\s/.test(normalized)) {
+    return reported.trim()
+  }
+  let containingId: string | null = null
+  for (const model of catalog.models) {
+    if (
+      (containingId === null || model.id.length > containingId.length) &&
+      normalized.includes(model.id.toLowerCase())
+    ) {
+      containingId = model.id
+    }
+  }
+  return containingId
 }

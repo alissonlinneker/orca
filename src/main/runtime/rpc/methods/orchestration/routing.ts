@@ -1,9 +1,11 @@
 import type { MessageType } from '../../../orchestration/db'
 import type { RunRow } from '../../../orchestration/types'
 import type { OrcaRuntimeService } from '../../../orca-runtime'
+import type { OrchestrationCallerIdentity } from '../../../orchestration/orchestration-caller-identity'
 import { MESSAGE_TYPES } from '../../../orchestration/types'
 import { OrchestrationError } from '../../../orchestration/orchestration-error'
 import { LEGACY_CONTRACT_VERSION } from '../../../orchestration/db'
+import { isDispatchMutationMessageType, parseMessageTaskId } from './schemas'
 
 export function parseMessageTypes(rawTypes: string | undefined): MessageType[] | undefined {
   const types = rawTypes
@@ -20,11 +22,12 @@ export function parseMessageTypes(rawTypes: string | undefined): MessageType[] |
 export function resolveMessageRun(
   runtime: OrcaRuntimeService,
   params: {
-    from?: string
-    senderPaneKey?: string
+    /** The sender as Run binding and Dispatch identity see it. */
+    sender: OrchestrationCallerIdentity
     to?: string
     runId?: string
     payload?: string
+    type?: string
   }
 ): { run: RunRow | undefined; dispatchId: string | undefined } {
   const db = runtime.getOrchestrationDb()
@@ -44,15 +47,14 @@ export function resolveMessageRun(
       // Lifecycle validation owns malformed payload errors; routing simply cannot derive a Dispatch.
     }
   }
+  const payloadNamesDispatch = dispatchId !== undefined
   if (!dispatchId && params.to?.startsWith('dispatch:')) {
     dispatchId = params.to.slice('dispatch:'.length)
   }
 
   const dispatch = dispatchId
     ? db.getDispatchContextById(dispatchId)
-    : params.from
-      ? db.getActiveDispatchForIdentity(params.from, params.senderPaneKey)
-      : undefined
+    : db.getActiveDispatchForIdentity(params.sender.address, params.sender.paneKey ?? undefined)
   if (params.to?.startsWith('dispatch:') && !dispatch) {
     throw new OrchestrationError(
       'dispatch_not_found',
@@ -63,9 +65,8 @@ export function resolveMessageRun(
   const resolvedRunId = params.runId ?? targetRunId ?? dispatch?.run_id
   let run = resolvedRunId ? db.getRun(resolvedRunId) : undefined
 
-  if (!run && params.from) {
-    const paneKey = params.senderPaneKey ?? runtime.getTerminalPaneKey(params.from)
-    run = paneKey ? db.getCurrentRunForPane(paneKey) : undefined
+  if (!run) {
+    run = db.getCurrentRunForCoordinator(params.sender)
   }
   if (resolvedRunId && (!run || run.legacy === 1)) {
     throw new OrchestrationError('run_not_found', `Run ${resolvedRunId} was not found.`)
@@ -78,6 +79,31 @@ export function resolveMessageRun(
       'dispatch_run_mismatch',
       `Dispatch ${dispatch.id} belongs to Run ${dispatch.run_id}, not ${run.id}.`
     )
+  }
+  // Why: a payload-named or lifecycle Dispatch scopes the message; lifecycle validation owns Task/Dispatch mismatches.
+  if (
+    run &&
+    !params.to &&
+    !params.runId &&
+    !(dispatch && (payloadNamesDispatch || isDispatchMutationMessageType(params.type)))
+  ) {
+    const taskId = parseMessageTaskId(params.payload)
+    const task = taskId ? db.getTask(taskId) : undefined
+    // Why: a nested coordinator (worker of the inferred Run) reporting on its own child Run's Task keeps reaching its parent.
+    const senderCoordinatesTaskRun =
+      dispatch !== undefined &&
+      task?.run_id != null &&
+      db.runsBoundToCoordinator(params.sender).some((bound) => bound.id === task.run_id)
+    if (task?.run_id && task.run_id !== run.id && !senderCoordinatesTaskRun) {
+      // Why: a Dispatch-bound sender cannot target another Run (dispatch_run_mismatch), so only offer its own.
+      const nextStep = dispatch
+        ? `rerun with --run ${run.id} to send to your Dispatch ${dispatch.id}'s Run.`
+        : `rerun with --run ${task.run_id} to reach the Task's Run, or --run ${run.id} to keep the inferred Run.`
+      throw new OrchestrationError(
+        'task_run_mismatch',
+        `Task ${task.id} belongs to Run ${task.run_id}, not the inferred Run ${run.id}. Nothing was sent; ${nextStep}`
+      )
+    }
   }
   return { run, dispatchId: dispatch?.id ?? dispatchId }
 }

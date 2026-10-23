@@ -2,13 +2,8 @@ import { openTranscriptReadStream, wslGatedReadFile } from '../native-chat/wsl-t
 import { WslTranscriptFsError } from '../native-chat/wsl-transcript-fs-gate'
 import { createInterface } from 'node:readline'
 import type { AiVaultSession } from '../../shared/ai-vault-types'
-import {
-  addPreviewContent,
-  addPreviewMessage,
-  createAccumulator,
-  finalizeSession,
-  updateTimeline
-} from './session-scanner-accumulator'
+import { createAccumulator, finalizeSession, updateTimeline } from './session-scanner-accumulator'
+import { addSessionContent, addSessionText } from './session-scanner-messages'
 import {
   kimiPrimaryAgentWirePath,
   kimiSessionIdFromStatePath,
@@ -16,11 +11,11 @@ import {
   readKimiWorkDirBySessionId
 } from './session-scanner-kimi-paths'
 import type { FileWithMtime, SessionAccumulator } from './session-scanner-types'
+import type { TranscriptMessageSink } from './session-transcript-consumers'
 import {
   asRecord,
   extractContentText,
   extractString,
-  normalizePreviewText,
   normalizeTitleText,
   numberValue,
   parseJsonObject
@@ -32,7 +27,8 @@ import {
 // session_index.jsonl; model/messages/tokens come from the wire transcript.
 export async function parseKimiSessionFile(
   file: FileWithMtime,
-  platform: NodeJS.Platform = process.platform
+  platform: NodeJS.Platform = process.platform,
+  messages?: TranscriptMessageSink
 ): Promise<AiVaultSession | null> {
   let stateRecord: Record<string, unknown> | null
   try {
@@ -53,7 +49,7 @@ export async function parseKimiSessionFile(
   }
 
   const sessionId = kimiSessionIdFromStatePath(file.path)
-  const accumulator = createAccumulator({ agent: 'kimi', file, sessionId })
+  const accumulator = createAccumulator({ agent: 'kimi', file, sessionId, messages })
 
   // Why: Kimi sessions are work-dir-scoped — the resume command must `cd` into
   // the original directory or the CLI rejects it. That path lives only in the
@@ -79,15 +75,11 @@ async function consumeKimiWireTranscript(
 ): Promise<void> {
   let pendingAssistantText: string[] = []
   const flushAssistant = (): void => {
-    // Why: previews use the 220-char limit (normalizePreviewText), not the
-    // 96-char title limit — assistant replies are shown in full preview width
-    // like every other agent's. Join raw chunks first so inter-chunk spacing
-    // survives; normalizePreviewText then collapses whitespace and caps length.
-    const text = normalizePreviewText(pendingAssistantText.join(''))
+    const text = pendingAssistantText.join('')
     pendingAssistantText = []
     if (text) {
       accumulator.messageCount++
-      addPreviewMessage(accumulator, { role: 'assistant', text })
+      addSessionText(accumulator, { role: 'assistant', text })
     }
   }
 
@@ -144,7 +136,7 @@ function consumeKimiUserMessage(accumulator: SessionAccumulator, value: unknown)
   accumulator.messageCount++
   // Title uses the 96-char title limit; the preview uses the 220-char limit.
   accumulator.title ??= extractContentText(message.content)
-  addPreviewContent(accumulator, 'user', message.content)
+  addSessionContent(accumulator, 'user', message.content)
 }
 
 function consumeKimiLoopEvent(

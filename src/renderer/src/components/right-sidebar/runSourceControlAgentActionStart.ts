@@ -1,5 +1,7 @@
 import { focusTerminalTabSurface } from '@/lib/focus-terminal-tab-surface'
 import { launchAgentInNewTab } from '@/lib/launch-agent-in-new-tab'
+import { newAgentLaunchRequestId } from '@/lib/agent-launch-request-id'
+import type { RuntimeGitContext } from '@/runtime/runtime-git-client-context'
 import type { GlobalSettings } from '../../../../shared/global-settings-types'
 import type { Repo } from '../../../../shared/repo-types'
 import type { TuiAgent } from '../../../../shared/tui-agent'
@@ -13,11 +15,14 @@ import { toast } from 'sonner'
 import { translate } from '@/i18n/i18n'
 import { sourceControlActionRecipeMatchesTarget } from './source-control-action-recipe-match'
 import { resolveSourceControlAgentSaveTarget } from './source-control-agent-action-dialog-support'
+import { admitSourceControlRecovery } from './source-control-recovery-admission'
 
 type RunSourceControlAgentActionStartArgs = {
   selectedAgent: TuiAgent
   trimmedCommandInput: string
   agentArgs: string
+  /** False when the launch would be structured native chat, which reads no CLI arguments. */
+  agentArgsApply: boolean
   commandTemplate: string
   saveTargetValue: string
   actionId: SourceControlLaunchActionId
@@ -29,10 +34,13 @@ type RunSourceControlAgentActionStartArgs = {
   promptDelivery: 'auto-submit' | 'draft' | 'submit-after-ready'
   launchPlatform?: NodeJS.Platform
   launchSource: LaunchSource
+  recoveryContext?: RuntimeGitContext | null
+  signal?: AbortSignal
   onStart?: (args: {
     agent: TuiAgent
     commandInput: string
-    agentArgs: string
+    /** Omitted when CLI arguments do not apply, so the launch resolves the global setting. */
+    agentArgs?: string
   }) => boolean | Promise<boolean>
   onSaveAgentDefault?: (
     target: SourceControlAiWriteTarget,
@@ -56,6 +64,7 @@ export async function runSourceControlAgentActionStart({
   selectedAgent,
   trimmedCommandInput,
   agentArgs,
+  agentArgsApply,
   commandTemplate,
   saveTargetValue,
   actionId,
@@ -67,6 +76,8 @@ export async function runSourceControlAgentActionStart({
   promptDelivery,
   launchPlatform,
   launchSource,
+  recoveryContext,
+  signal,
   onStart,
   onSaveAgentDefault,
   onLaunchAccepted,
@@ -74,9 +85,22 @@ export async function runSourceControlAgentActionStart({
   onLaunched,
   onClose
 }: RunSourceControlAgentActionStartArgs): Promise<boolean> {
+  // Detection and delivery planning can outlive the state that opened the composer.
+  if (signal?.aborted) {
+    return false
+  }
+  if (recoveryContext && !(await admitSourceControlRecovery(recoveryContext, signal))) {
+    return false
+  }
+  if (signal?.aborted) {
+    return false
+  }
   let launched = false
   let launchFailureNotified = false
   let launchAcceptedNotified = false
+  // Why: `undefined` is what makes the launch fall back to the global Agents arguments;
+  // an empty string would beat that fallback and silently suppress them.
+  const launchAgentArgs = agentArgsApply ? agentArgs : undefined
   const notifyLaunchAccepted = (): void => {
     if (launchAcceptedNotified) {
       return
@@ -88,25 +112,26 @@ export async function runSourceControlAgentActionStart({
     launched = await onStart({
       agent: selectedAgent,
       commandInput: trimmedCommandInput,
-      agentArgs
+      agentArgs: launchAgentArgs
     })
     if (launched) {
       notifyLaunchAccepted()
     }
   } else if (worktreeId) {
     const result = launchAgentInNewTab({
+      requestId: newAgentLaunchRequestId(),
       agent: selectedAgent,
       worktreeId,
       groupId: groupId ?? worktreeId,
       prompt: trimmedCommandInput,
-      agentArgs,
+      agentArgs: launchAgentArgs,
       promptDelivery,
       launchPlatform,
       launchSource
     })
     launched = Boolean(result)
-    if (result?.tabId) {
-      focusTerminalTabSurface(result.tabId)
+    if (result?.surface.kind === 'local-terminal') {
+      focusTerminalTabSurface(result.surface.tabId)
     }
     // Why: lets callers park launch-scoped state before submit-after-ready finishes
     // (can take tens of seconds); host mutations still wait for delivery below.
@@ -165,6 +190,8 @@ export async function runSourceControlAgentActionStart({
     }
   }
   onLaunched?.()
-  onClose()
+  if (!signal?.aborted) {
+    onClose()
+  }
   return true
 }

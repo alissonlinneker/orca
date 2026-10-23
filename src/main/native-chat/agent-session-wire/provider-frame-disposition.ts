@@ -1,5 +1,6 @@
 import type { CodexAppServerNotificationMethod } from '../../codex/codex-app-server-notification-schema'
 import { CODEX_SUBAGENT_ITEM_TYPE } from '../../codex/codex-subagent-activity'
+import { isProviderRecord } from '../../provider-process/provider-json-record'
 import type { ClaudeStreamJsonFrameKind } from './claude-stream-json-frame-schema'
 
 export type ProviderFrameClassification =
@@ -25,8 +26,10 @@ export const PROVIDER_FRAME_CLASSIFICATIONS = {
     'thread/closed': 'status-chrome',
     'skills/changed': 'status-chrome',
     'thread/name/updated': 'status-chrome',
-    'thread/goal/updated': 'status-chrome',
-    'thread/goal/cleared': 'status-chrome',
+    // The goal tool call is never emitted as an item, so these two frames are the only
+    // truthful evidence a goal exists; the model's prose about goals can be wrong.
+    'thread/goal/updated': 'timeline-substantive',
+    'thread/goal/cleared': 'timeline-substantive',
     'thread/environment/connected': 'status-chrome',
     'thread/environment/disconnected': 'status-chrome',
     'thread/settings/updated': 'status-chrome',
@@ -34,6 +37,7 @@ export const PROVIDER_FRAME_CLASSIFICATIONS = {
     'turn/started': 'status-chrome',
     'hook/started': 'suppressed-benign',
     'turn/completed': 'status-chrome',
+    // A failed hook surfaces (catalog below); a refused prompt writes its own row before this.
     'hook/completed': 'suppressed-benign',
     'turn/diff/updated': 'suppressed-benign',
     'turn/plan/updated': 'timeline-substantive',
@@ -100,6 +104,7 @@ export const PROVIDER_FRAME_CLASSIFICATIONS = {
     'message:stream_event:content_block_start': 'status-chrome',
     'message:stream_event:content_block_delta': 'stream-into-item',
     'message:stream_event:content_block_stop': 'status-chrome',
+    'message:stream_event:ping': 'suppressed-benign',
     'message:system:compact_boundary': 'status-chrome',
     'message:system:status': 'status-chrome',
     'message:system:api_retry': 'status-chrome',
@@ -131,14 +136,15 @@ export const PROVIDER_FRAME_CLASSIFICATIONS = {
     'message:system:permission_denied': 'error-surface',
     'message:prompt_suggestion': 'status-chrome',
     'message:system:mirror_error': 'error-surface',
-    'message:system:informational': 'timeline-substantive',
+    // Written by its own row (`claude-informational-row`): a warning, a halting one as a hook's outcome.
+    'message:system:informational': 'status-chrome',
     'message:conversation_reset': 'status-chrome',
     // A `started`/`completed`/`cancelled` state for one queued command uuid and
-    // nothing else; the CLI keeps it out of its own transcript too. A state that
-    // reads as a failure still surfaces, via the payload check in classify.
+    // nothing else; the CLI keeps it out of its own transcript too.
     'message:command_lifecycle': 'status-chrome',
-    // The turn-complete signal: lifecycle, never a transcript row. Error subtypes
-    // included — the turn's assistant frames already carry any user-facing text.
+    // The turn-complete signal: lifecycle, never a transcript row by kind. Whether one
+    // failed depends on its turn (a stopped turn is no failure), so the result
+    // journaling writes that row with its own verdict.
     'message:result:success': 'status-chrome',
     'message:result:error_during_execution': 'status-chrome',
     'message:result:error_max_turns': 'status-chrome',
@@ -146,51 +152,6 @@ export const PROVIDER_FRAME_CLASSIFICATIONS = {
     'message:result:error_max_structured_output_retries': 'status-chrome'
   }
 } as const satisfies ProviderFrameClassificationTable
-
-const ERROR_VARIANT_KEYS = new Set(['type', 'status', 'state', 'subtype', 'outcome'])
-const ERROR_VALUE_KEYS = new Set(['error', 'failureReason', 'failure_reason'])
-
-function isErrorVariant(value: unknown): boolean {
-  if (typeof value !== 'string') {
-    return false
-  }
-  const normalized = value.replace(/[_\s-]/g, '').toLowerCase()
-  return (
-    normalized.startsWith('error') || normalized.startsWith('fail') || normalized === 'systemerror'
-  )
-}
-
-function hasProviderError(payload: unknown): boolean {
-  const pending = [payload]
-  const seen = new WeakSet<object>()
-  while (pending.length > 0) {
-    const value = pending.pop()
-    if (typeof value !== 'object' || value === null || seen.has(value)) {
-      continue
-    }
-    seen.add(value)
-    if (Array.isArray(value)) {
-      pending.push(...value)
-      continue
-    }
-    for (const [key, nested] of Object.entries(value)) {
-      if ((key === 'isError' || key === 'is_error') && nested === true) {
-        return true
-      }
-      if (key === 'success' && nested === false) {
-        return true
-      }
-      if (ERROR_VARIANT_KEYS.has(key) && isErrorVariant(nested)) {
-        return true
-      }
-      if (ERROR_VALUE_KEYS.has(key) && nested !== null && nested !== false && nested !== '') {
-        return true
-      }
-      pending.push(nested)
-    }
-  }
-  return false
-}
 
 /** Codex thread-item types with no typed renderer, dispositioned by hand so a
  *  new item type cannot leak `codex · item:<type>` into the transcript. The
@@ -204,15 +165,14 @@ const CODEX_ITEM_CLASSIFICATIONS: Record<string, ProviderFrameClassification> = 
   // `restoreThread` replays them straight through `items.handle`, which is where
   // the classification earns its keep.
   //
-  // `collabAgentToolCall` is deliberately NOT suppressed with it. Nothing
-  // guarantees a session reports subagent work as `subAgentActivity` at all; one
-  // that only ever emits the collab tool call gets no roster row, and suppressing
-  // that too would leave its fan-out showing nothing.
+  // `collabAgentToolCall` is deliberately NOT suppressed with it. Codex's default
+  // multi-agent mode reports subagent work ONLY as that call, which renders as its
+  // own tool row and never reaches this catalog; were it ever to, suppressing it
+  // would leave that session's fan-out showing nothing.
   [CODEX_SUBAGENT_ITEM_TYPE]: 'status-chrome',
   // `{id, durationMs}` and nothing else — Codex's own transcript renders it as
-  // nothing at all. Every other item type this build does not model carries text
-  // a user would want (review output, an image path, hook prompt text), so those
-  // keep their visible fallback row.
+  // nothing at all. Every other item type this build does not model keeps its
+  // journaled fallback row; a chat draws it only when the row carries a sentence.
   sleep: 'status-chrome'
 }
 
@@ -224,49 +184,73 @@ function itemKind(kind: string): string | null {
   return kind.startsWith('item:') ? kind.slice('item:'.length) : null
 }
 
-export function isDeltaShapedProviderFrameKind(kind: string): boolean {
+export function isDeltaProviderFrameKind(kind: string): boolean {
   return notificationKind(kind).toLowerCase().endsWith('delta')
 }
 
-function catalogClassification(
-  provider: string,
-  kind: string
-): ProviderFrameClassification | undefined {
-  if (provider === 'codex') {
-    const item = itemKind(kind)
-    if (item !== null) {
-      return CODEX_ITEM_CLASSIFICATIONS[item]
+const CODEX_NOTIFICATION_CLASSIFICATIONS: Readonly<Record<string, ProviderFrameClassification>> =
+  PROVIDER_FRAME_CLASSIFICATIONS.codex
+const CLAUDE_FRAME_CLASSIFICATIONS: Readonly<Record<string, ProviderFrameClassification>> =
+  PROVIDER_FRAME_CLASSIFICATIONS.claude
+
+/** Each provider's own table, by provider id: an unlisted provider has none, so every frame it
+ *  sends that no rule above claims stays a visible row.
+ *
+ *  A frame is a failure only because its kind is one, or because a field its kind declares as its
+ *  outcome says so. Nested statuses describe other things (the MCP servers a session start lists,
+ *  the tasks a roster holds), so a payload is never searched for failure-looking words. */
+const PROVIDER_FRAME_CATALOGS: ReadonlyMap<
+  string,
+  (kind: string, payload: unknown) => ProviderFrameClassification | undefined
+> = new Map<
+  keyof ProviderFrameClassificationTable,
+  (kind: string, payload: unknown) => ProviderFrameClassification | undefined
+>([
+  [
+    'codex',
+    (kind, payload) => {
+      const item = itemKind(kind)
+      if (item !== null) {
+        return CODEX_ITEM_CLASSIFICATIONS[item]
+      }
+      const method = notificationKind(kind)
+      if (method === 'hook/completed') {
+        const run = isProviderRecord(payload) && isProviderRecord(payload.run) ? payload.run : null
+        return run?.status === 'failed' ? 'error-surface' : 'suppressed-benign'
+      }
+      return CODEX_NOTIFICATION_CLASSIFICATIONS[method]
     }
-    return PROVIDER_FRAME_CLASSIFICATIONS.codex[
-      notificationKind(kind) as CodexAppServerNotificationMethod
-    ]
-  }
-  if (provider === 'claude') {
-    return PROVIDER_FRAME_CLASSIFICATIONS.claude[kind as ClaudeStreamJsonFrameKind]
-  }
-  return undefined
-}
+  ],
+  [
+    'claude',
+    (kind, payload) => {
+      if (kind === 'message:result') {
+        const subtype = isProviderRecord(payload) ? payload.subtype : undefined
+        return subtype === 'success' ? 'status-chrome' : 'error-surface'
+      }
+      if (kind === 'message:system:hook_response') {
+        return isProviderRecord(payload) && payload.outcome === 'error'
+          ? 'error-surface'
+          : 'suppressed-benign'
+      }
+      if (kind === 'message:auth_status') {
+        const error = isProviderRecord(payload) ? payload.error : undefined
+        return typeof error === 'string' && error.trim().length > 0
+          ? 'error-surface'
+          : 'status-chrome'
+      }
+      return CLAUDE_FRAME_CLASSIFICATIONS[kind]
+    }
+  ]
+])
 
 export function classifyProviderFrame(
   provider: string,
   kind: string,
   payload: unknown
 ): ProviderFrameClassification {
-  // Payload failure inspection outranks the name-shape heuristic below: an
-  // unknown frame that reports an error must reach the user even when its
-  // method name happens to look like a stream delta.
-  if (hasProviderError(payload)) {
-    return 'error-surface'
-  }
-  if (isDeltaShapedProviderFrameKind(kind)) {
+  if (isDeltaProviderFrameKind(kind)) {
     return 'stream-into-item'
   }
-  if (provider === 'claude' && kind === 'message:result') {
-    const subtype =
-      typeof payload === 'object' && payload !== null
-        ? (payload as Record<string, unknown>).subtype
-        : undefined
-    return subtype === 'success' ? 'status-chrome' : 'error-surface'
-  }
-  return catalogClassification(provider, kind) ?? 'timeline-substantive'
+  return PROVIDER_FRAME_CATALOGS.get(provider)?.(kind, payload) ?? 'timeline-substantive'
 }

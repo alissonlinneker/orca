@@ -1,4 +1,4 @@
-import type { TaskPageGitLabLoadingModel } from './use-task-page-gitlab-loading'
+import type { TaskPageProviderMetadataModel } from './use-task-page-provider-metadata'
 import { useState, useMemo, useEffect } from 'react'
 import { LINEAR_ISSUE_LIST_MAX } from '../../../shared/linear/issue-read-limits'
 import { findTaskPageLinearIssue } from '@/components/task-page-cache-selectors'
@@ -7,12 +7,15 @@ import {
   buildLinearTeamUrl,
   getLinearOrganizationUrlKeyFromIssueUrl
 } from '../../../shared/linear/links'
-import { reconcileLinearTeamSelection } from '@/components/task-page-linear-team-selection'
+import {
+  reconcileLinearTeamSelection,
+  storedLinearTeamSelection
+} from '@/components/task-page/linear/task-page-linear-team-selection'
 import { useTaskPageLinearFilterSelection } from './use-task-page-linear-filter-selection'
 export type TaskPageLinearListSelectionPreludeModel = ReturnType<
   typeof useTaskPageLinearListSelectionPrelude
 >
-export function useTaskPageLinearListSelectionPrelude(model: TaskPageGitLabLoadingModel) {
+export function useTaskPageLinearListSelectionPrelude(model: TaskPageProviderMetadataModel) {
   const {
     settings,
     linearStatus,
@@ -42,7 +45,13 @@ export function useTaskPageLinearListSelectionPrelude(model: TaskPageGitLabLoadi
     linearCustomViewContentsError,
     availableTeams
   } = model
-  const defaultLinearTeamSelection = settings?.defaultLinearTeamSelection
+  // Why memoized: the normalized array feeds an effect that sets state, and a
+  // fresh array per render would re-run it every render.
+  const rawLinearTeamSelection = settings?.defaultLinearTeamSelection
+  const defaultLinearTeamSelection = useMemo(
+    () => storedLinearTeamSelection(rawLinearTeamSelection),
+    [rawLinearTeamSelection]
+  )
   const [linearTeamSelection, setLinearTeamSelection] = useState<ReadonlySet<string>>(() => {
     if (!defaultLinearTeamSelection) {
       return new Set<string>()
@@ -232,7 +241,7 @@ export function useTaskPageLinearListSelectionPrelude(model: TaskPageGitLabLoadi
   nextModel.linearTeamOptions = linearTeamOptions
   return nextModel
 }
-export function useTaskPageLinearListSelection(model: TaskPageGitLabLoadingModel) {
+export function useTaskPageLinearListSelection(model: TaskPageProviderMetadataModel) {
   const preludeModel = useTaskPageLinearListSelectionPrelude(model)
   return useTaskPageLinearFilterSelection(preludeModel)
 }

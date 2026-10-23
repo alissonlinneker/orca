@@ -9,6 +9,11 @@ import {
 
 const FILE_COUNT_PATH = /^\d+ files?$/
 
+/** Codex reports a change to several files under the path `N files`, which names no file. */
+export function isNativeChatFileCountPath(path: string): boolean {
+  return FILE_COUNT_PATH.test(path)
+}
+
 /** A move is appended to the patch body as prose rather than a header field, on
  *  every lane that carries the body as text. Left in place it renders as a
  *  numbered line of the file it moved.
@@ -44,6 +49,10 @@ export function editFilesFromPatchText(
   callerPath: string | null,
   summaryOnly = false
 ): NativeChatEditFileSummary[] | null {
+  if (callerPath !== null && isNativeChatFileCountPath(callerPath)) {
+    // A file count cannot name a card, regardless of the patch contents.
+    return null
+  }
   // The body carries its own marker when the journal clipped it. Read as
   // content it becomes a numbered line of the file, and the rows that follow
   // are reported complete.
@@ -52,12 +61,6 @@ export function editFilesFromPatchText(
   // One card per file the patch touches: run together, the later files' rows
   // and gutter numbers sit under the first file's name.
   const split = unifiedPatchSections(moved.body)
-  if (callerPath !== null && FILE_COUNT_PATH.test(callerPath)) {
-    // The producer joined several files' patches and kept a count in place of a
-    // path, so nothing here can name a file. Naming the card after the count
-    // would assert a file that does not exist.
-    return null
-  }
   // A patch that names one file is the file the call is reporting on, so the
   // call's own path wins — it is the provider's, where the header's is relative
   // to the patch. A patch naming several has no one path, and a rename's
