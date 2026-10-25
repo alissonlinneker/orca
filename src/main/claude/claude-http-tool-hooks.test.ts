@@ -107,6 +107,10 @@ describe('managed http hook entry', () => {
     expect(createManagedCommandMatcher('openclaude-hook.sh')(url)).toBe(false)
     expect(isClaudeManaged(USER_HTTP.url)).toBe(false)
     expect(isClaudeManaged(url.replace('127.0.0.1', 'localhost'))).toBe(false)
+    // 127.0.0.1 as userinfo passes a raw prefix check; the parsed host is example.com.
+    expect(isClaudeManaged('http://127.0.0.1:@example.com/hook/claude?orca-hook=claude-hook')).toBe(
+      false
+    )
   })
 
   it('is requested only through the env opt-in, and never on Windows', () => {
@@ -191,6 +195,33 @@ describe.skipIf(process.platform === 'win32')('Claude http tool hooks install', 
       expect(managedHooks(settings, event), event).toEqual([])
     }
     expect(hooksFor(settings, 'PreToolUse')).toEqual([USER_HTTP])
+  })
+
+  it('moves a previous run http entries to the new port before any install probes the CLI', async () => {
+    setClaudeHttpToolHookPort(45010)
+    new ClaudeHookService().install(CURRENT_CLAUDE)
+    expectToolEventsOn(readSettings(), 'http', 45010)
+    setClaudeHttpToolHookPort(null)
+
+    // A fresh module is a fresh Orca process: the listener binds before any install runs.
+    vi.resetModules()
+    const restarted = await import('./claude-http-tool-hooks')
+    restarted.startClaudeHttpToolHooks(45011)
+    expectToolEventsOn(readSettings(), 'http', 45011)
+
+    restarted.stopClaudeHttpToolHooks()
+    expectToolEventsOn(readSettings(), 'command')
+  })
+
+  it('leaves script entries on the script until an install probes the CLI', async () => {
+    new ClaudeHookService().install(CURRENT_CLAUDE)
+    expectToolEventsOn(readSettings(), 'command')
+
+    vi.resetModules()
+    const restarted = await import('./claude-http-tool-hooks')
+    restarted.startClaudeHttpToolHooks(45012)
+    expectToolEventsOn(readSettings(), 'command')
+    restarted.stopClaudeHttpToolHooks()
   })
 
   it('keeps the script for a Claude CLI older than http hooks', () => {

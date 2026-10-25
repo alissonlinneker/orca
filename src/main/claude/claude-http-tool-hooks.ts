@@ -73,12 +73,18 @@ export function resolveClaudeHttpToolHookTarget(
     lastProbedClaudeVersion = claudeVersion ?? null
   }
   if (
+    !claudeVersionReaches(claudeVersion ?? lastProbedClaudeVersion, CLAUDE_HTTP_HOOKS_FIRST_VERSION)
+  ) {
+    return null
+  }
+  return resolveListenerTarget(config)
+}
+
+/** The live listener for the default Claude home, without the CLI version gate. */
+function resolveListenerTarget(config: HooksConfig): ManagedHttpHookTarget | null {
+  if (
     process.platform === 'win32' ||
     liveClaudeHttpToolHookPort === null ||
-    !claudeVersionReaches(
-      claudeVersion ?? lastProbedClaudeVersion,
-      CLAUDE_HTTP_HOOKS_FIRST_VERSION
-    ) ||
     isClaudeSubprocessEnvScrubbed(config)
   ) {
     return null
@@ -135,11 +141,16 @@ export function managedClaudeEventHooks(
   }
 }
 
-/** Swap Orca's tool-event entries in place; an event without an Orca entry stays untouched. */
+/**
+ * Swap Orca's tool-event entries in place; an event without an Orca entry stays untouched.
+ * With `keepScriptEntries`, Orca's script entries stay as they are and only its http
+ * entries move, so a sync that cannot check the CLI version never adds an http entry.
+ */
 export function retargetManagedToolHooks(
   config: HooksConfig,
   hookForEvent: (eventName: string) => HookCommandConfig,
-  scriptFileName: string
+  scriptFileName: string,
+  options: { keepScriptEntries?: boolean } = {}
 ): { config: HooksConfig; changed: boolean } {
   const isManagedCommand = createManagedCommandMatcher(scriptFileName)
   const isManagedHook = (hook: HookCommandConfig): boolean =>
@@ -162,6 +173,9 @@ export function retargetManagedToolHooks(
         if (!isManagedHook(hook) || current) {
           return hook
         }
+        if (options.keepScriptEntries && hook.type !== 'http') {
+          return hook
+        }
         changed = true
         return expected
       })
@@ -182,12 +196,19 @@ export function syncClaudeHttpToolHooks(): boolean {
     return false
   }
   const scriptPath = getManagedScriptPath(CLAUDE_HOOK_SETTINGS)
-  const target = resolveClaudeHttpToolHookTarget('claude', config, undefined)
+  // Startup sync can run before any install has probed the CLI, and an unknown version
+  // fails the gate. Instead of sending a previous run's http entries back to the script,
+  // keep each entry on the transport it already uses and move http entries to the live port.
+  const versionUnknown = liveClaudeHttpToolHookPort !== null && lastProbedClaudeVersion === null
+  const target = versionUnknown
+    ? resolveListenerTarget(config)
+    : resolveClaudeHttpToolHookTarget('claude', config, undefined)
   const { config: next, changed } = retargetManagedToolHooks(
     config,
     (eventName) =>
       getManagedClaudeEventHook(eventName, scriptPath, CLAUDE_HOOK_SETTINGS, null, target),
-    getManagedScriptFileName(CLAUDE_HOOK_SETTINGS)
+    getManagedScriptFileName(CLAUDE_HOOK_SETTINGS),
+    { keepScriptEntries: versionUnknown }
   )
   if (changed) {
     writeHooksJson(configPath, next)

@@ -69,7 +69,10 @@ export function isManagedHttpHookUrl(value: string, scriptStem: string): boolean
   }
   try {
     const url = new URL(value)
+    // The prefix check reads the raw string; `http://127.0.0.1:@example.com/...` passes
+    // it with 127.0.0.1 as the userinfo, so the parsed host has to match as well.
     return (
+      url.hostname === MANAGED_HTTP_HOOK_HOST &&
       url.pathname.startsWith('/hook/') &&
       url.searchParams.get(MANAGED_HTTP_HOOK_MARKER_PARAM) === scriptStem
     )
