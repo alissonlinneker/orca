@@ -33,7 +33,6 @@ import {
   CLAUDE_HOOK_SETTINGS,
   getManagedScriptFileName,
   getConfigPath,
-  getManagedEventHook,
   getManagedScriptPath,
   getPosixManagedScriptFileName,
   getRemoteConfigPath,
@@ -52,6 +51,7 @@ import {
   OPENCLAUDE_MANAGED_HOOK_PLAN,
   type ClaudeManagedHookPlan
 } from './claude-managed-hook-events'
+import { managedClaudeEventHooks } from './claude-http-tool-hooks'
 
 type ClaudeHookServiceOptions = {
   agent: AgentHookInstallStatus['agent']
@@ -123,11 +123,8 @@ export class ClaudeHookService {
     // Count either Windows launcher form: installation falls back to .cmd when the exe cannot be placed.
     const exePath = this.usesWindowsEntry ? getWindowsClaudeHookExecutablePath(scriptPath) : null
     const events = this.managedHookPlan(options).install.map((event) => event.eventName)
-    const { missing, matchedForms } = findManagedEventHookForms(config, events, (eventName) =>
-      [null, exePath].map((path) =>
-        getManagedEventHook(eventName, scriptPath, this.options.settings, path)
-      )
-    )
+    const hooks = managedClaudeEventHooks(this.options, config, options, scriptPath, exePath)
+    const { missing, matchedForms } = findManagedEventHookForms(config, events, hooks.formsFor)
     const presentCount = matchedForms.length
     const managedHooksPresent = presentCount > 0
     let state: AgentHookInstallState
@@ -181,9 +178,10 @@ export class ClaudeHookService {
 
     const plan = this.managedHookPlan(options)
     const exePath = this.usesWindowsEntry ? installWindowsClaudeHookExecutable(scriptPath) : null
+    const hooks = managedClaudeEventHooks(this.options, config, options, scriptPath, exePath)
     let nextConfig = applyManagedHooks(
       config,
-      (eventName) => getManagedEventHook(eventName, scriptPath, this.options.settings, exePath),
+      hooks.hookFor,
       getManagedScriptFileName(this.options.settings),
       plan
     )
