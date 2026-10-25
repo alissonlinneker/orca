@@ -6,6 +6,7 @@ import { killAllPty } from '../ipc/pty/kill-all'
 import { disconnectDaemon, shutdownDaemon } from '../daemon/daemon-provider-state'
 import { beginSshShutdown } from '../ipc/ssh/ssh-shutdown-drain'
 import { agentHookServer } from '../agent-hooks/server'
+import { stopClaudeHttpToolHooks } from '../claude/claude-http-tool-hooks'
 import { wslHookRelayManager } from '../agent-hooks/wsl-hook-relay-manager'
 import { removeManagedAgentHooksAsync } from '../agent-hooks/managed-agent-hook-controls'
 import { stopStructuredAgentSessionRuntime } from '../runtime/structured-agent-session-runtime'
@@ -165,6 +166,8 @@ function installWillQuitHandler(): void {
     state.uninstallRepoMaintenanceIdleGate = null
     // Why stop, not wait: a delete can run for minutes, and its record makes the next start finish it.
     stopBackgroundWorktreeRemovals()
+    // Why before the stop: an http entry pointing at a closed port shows a hook error per tool call.
+    stopClaudeHttpToolHooks()
     // Why keepStatus: the chat teardown above reads each chat's background work from that store
     // after this returns; cleared, a chat whose only work was a subagent or command is not offered.
     agentHookServer.stop({ keepStatus: true })
