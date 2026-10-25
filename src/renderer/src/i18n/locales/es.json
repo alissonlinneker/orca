@@ -209,7 +209,8 @@
           "microphone": "micrófono",
           "location": "ubicación",
           "notifications": "notificaciones",
-          "clipboard": "portapapeles"
+          "clipboard": "portapapeles",
+          "localNetwork": "red local"
         },
         "profile": "Perfil del navegador",
         "ask": "Preguntar de nuevo",
@@ -310,6 +311,7 @@
     "view": "Vista",
     "reload": "Recargar",
     "forceReload": "Forzar recarga",
+    "toggleDevTools": "Alternar herramientas para desarrolladores",
     "resetSize": "Restablecer tamaño",
     "zoomIn": "Acercar",
     "zoomOut": "Alejar",
@@ -1146,6 +1148,11 @@
       "aiVaultResumeRefusal": {
         "openInChat": "Esta conversación de {{value0}} está abierta en un chat. Actualiza el historial de sesiones para abrirla.",
         "ownershipUnknown": "Orca no pudo confirmar quién es el propietario de esta conversación de {{value0}}. Actualiza el historial de sesiones e inténtalo de nuevo."
+      },
+      "composerCreateHandoff": {
+        "reopen": "Reabrir",
+        "preparationTimedOut": "Se agotó el tiempo de preparación del worktree.",
+        "needsInput": "No se creó el worktree porque necesita más información."
       },
       "pendingWorktreeCreation": {
         "checkingOutFiles": "Extrayendo archivos… {{percent}}%",
@@ -4231,10 +4238,6 @@
               "waiting": {
                 "label": "Se actualiza cuando Claude se ejecuta",
                 "message": "El uso de Claude se actualizará la próxima vez que ejecutes Claude."
-              },
-              "expired": {
-                "label": "Inicio de sesión caducado",
-                "message": "El uso de Claude ha caducado. Inicia Claude en esta cuenta para actualizarlo."
               }
             },
             "remoteOwnerNotConfigured": "No configurado en {{server}}",
@@ -11921,7 +11924,8 @@
           "failed": "Update failed",
           "serviceManagerHelp": "Update Orca through the service manager that starts this server.",
           "unpackedHelp": "Las compilaciones de desarrollo deben actualizarse desde su copia del código fuente.",
-          "legacyHelp": "Las actualizaciones remotas no están disponibles para este servidor. Actualiza Orca en el servidor."
+          "legacyHelp": "Las actualizaciones remotas no están disponibles para este servidor. Actualiza Orca en el servidor.",
+          "managedOverSshHelp": "Este escritorio actualiza este servidor por SSH. Usa Actualizar en su fila de Servidores remotos de Orca."
         },
         "BrowserLinkRoutingSetting": {
           "description": "Abre los enlaces http(s) del terminal, Markdown y el editor en el navegador integrado de Orca. {{shortcut}} siempre usa el navegador del sistema.",
@@ -12695,7 +12699,10 @@
             "forgetDescription": "Desvincula este servidor aquí sin contactar con su host. Si el host vuelve, es posible que el servidor siga ejecutándose allí.",
             "orcaVersion": "Orca en este host: {{version}}",
             "stopOrcaDescription": "Detiene Orca en el host SSH y lo quita de esta lista.",
-            "updateOrcaOnHost": "Actualizar Orca en este host"
+            "updateOrcaOnHost": "Actualizar Orca en este host",
+            "updateAnyway": "Actualizar de todos modos",
+            "notNow": "Ahora no",
+            "forceUpdate": "Hay terminales en ejecución en este host. Seguirán ejecutándose durante la actualización y sus paneles se reconectarán cuando se reinicie el servidor de Orca."
           },
           "title": "Orca en tus hosts SSH",
           "description": "Orca se instala en un host SSH vacío y se mantiene actualizado.",
@@ -14663,6 +14670,17 @@
             "scanning": "Analizando {{value0}}",
             "checking": "Comprobando {{value0}}",
             "scanned": "Analizados {{value0}}"
+          },
+          "ssh": {
+            "unrestored": {
+              "port": {
+                "row": {
+                  "04adb5f5e7": "No se pudo iniciar: {{value0}}",
+                  "4c119f5e2a": "Aún no iniciado",
+                  "b817a96fcf": "Detenido: {{value0}}"
+                }
+              }
+            }
           }
         }
       },
@@ -16849,6 +16867,11 @@
             "copyImageAddress": "Copiar dirección de la imagen",
             "searchSelection": "Buscar “{{value1}}” en {{value0}}",
             "inspect": "Inspeccionar",
+            "devToolsTitle": "DevTools",
+            "devToolsDockRight": "Acoplar a la derecha",
+            "devToolsDockBottom": "Acoplar abajo",
+            "devToolsUndock": "Abrir en una ventana aparte",
+            "devToolsClose": "Cerrar DevTools",
             "1ded0d3168": "Copiar captura de pantalla",
             "f30d2d35a7": "Captura de pantalla",
             "fa6ea61de3": "Cancelar",
@@ -18357,7 +18380,8 @@
             "clipboard": "Portapapeles",
             "midi": "Dispositivos MIDI",
             "windowManagement": "Gestión de ventanas",
-            "idleDetection": "Uso del dispositivo"
+            "idleDetection": "Uso del dispositivo",
+            "localNetwork": "Red local"
           },
           "allow": "Permitir",
           "block": "Bloquear",
@@ -18369,7 +18393,8 @@
             "camera": "Usar la cámara",
             "midi": "Usar tus dispositivos MIDI",
             "windowManagement": "Gestionar ventanas en todas tus pantallas",
-            "idleDetection": "Detectar cuándo estás usando este dispositivo"
+            "idleDetection": "Detectar cuándo estás usando este dispositivo",
+            "localNetwork": "Acceder a las apps de este dispositivo y a los dispositivos de tu red local"
           },
           "localFiles": "Archivos locales",
           "title": "{{site}} solicita permiso para",

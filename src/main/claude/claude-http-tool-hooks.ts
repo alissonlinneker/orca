@@ -9,7 +9,11 @@ import {
   type HooksConfig
 } from '../agent-hooks/installer-utils'
 import { buildManagedHttpHook, type ManagedHttpHookTarget } from '../agent-hooks/managed-http-hook'
-import { claudeVersionReaches, parseClaudeCliVersion } from './claude-hook-event-versions'
+import {
+  claudeAcceptsExecFormHooks,
+  claudeVersionReaches,
+  parseClaudeCliVersion
+} from './claude-hook-event-versions'
 import { CLAUDE_HTTP_TOOL_HOOK_EVENTS } from './claude-managed-hook-events'
 import {
   CLAUDE_HOOK_SETTINGS,
@@ -18,7 +22,8 @@ import {
   getManagedScriptFileName,
   getManagedScriptPath,
   hasSameManagedHookInvocation,
-  type ClaudeCompatibleHookSettings
+  type ClaudeCompatibleHookSettings,
+  type NativeHookFormOptions
 } from './hook-settings'
 
 /** Opt-in while the http transport is new: `ORCA_CLAUDE_HTTP_HOOKS=1` in Orca's environment. */
@@ -98,10 +103,11 @@ export function getManagedClaudeEventHook(
   scriptPath: string,
   settings: ClaudeCompatibleHookSettings,
   nativeHookPath: string | null,
-  http: ManagedHttpHookTarget | null
+  http: ManagedHttpHookTarget | null,
+  formOptions: NativeHookFormOptions = {}
 ): HookCommandConfig {
   if (!http || !CLAUDE_HTTP_TOOL_HOOK_EVENTS.includes(eventName)) {
-    return getManagedEventHook(eventName, scriptPath, settings, nativeHookPath)
+    return getManagedEventHook(eventName, scriptPath, settings, nativeHookPath, formOptions)
   }
   const hook = buildManagedHttpHook(http, settings.scriptBaseName, MANAGED_HOOK_TIMEOUT_SECONDS)
   // oxlint-disable-next-line typescript/consistent-type-assertions -- SAFETY: an http entry has no command; readers of a hooks file already meet entries without one and match this one on url.
@@ -129,13 +135,16 @@ export function managedClaudeEventHooks(
   const eventHook = (
     eventName: string,
     path: string | null,
-    target: ManagedHttpHookTarget | null
-  ) => getManagedClaudeEventHook(eventName, scriptPath, settings, path, target)
+    target: ManagedHttpHookTarget | null,
+    formOptions: NativeHookFormOptions = {}
+  ) => getManagedClaudeEventHook(eventName, scriptPath, settings, path, target, formOptions)
+  const execForm = claudeAcceptsExecFormHooks(options.claudeVersion)
   return {
-    hookFor: (eventName) => eventHook(eventName, nativeHookPath, http),
+    hookFor: (eventName) => eventHook(eventName, nativeHookPath, http, { execForm }),
     formsFor: (eventName) => [
-      eventHook(eventName, null, null),
-      eventHook(eventName, nativeHookPath, null),
+      // An installed exec form proves its CLI accepted it, whatever the probe now reports.
+      eventHook(eventName, null, null, { execForm: true }),
+      eventHook(eventName, nativeHookPath, null, { execForm: true }),
       ...(http ? [eventHook(eventName, null, http)] : [])
     ]
   }
